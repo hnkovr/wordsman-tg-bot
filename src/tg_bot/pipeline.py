@@ -1,0 +1,283 @@
+"""Movie/document → wordlists pipeline, reusing the parent wordsman checkout via subprocess.
+
+The heavy lifting stays in the parent repo: `scripts/fetch_srt.sh` (movie → SRT) and
+`main.py subtitle-dict` (SRT/text → export formats). This module only orchestrates,
+extracts plain text from PDF/HTML uploads, and zips the results.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import re
+import shutil
+import sys
+import zipfile
+from html.parser import HTMLParser
+from pathlib import Path
+
+from tg_bot.config import REPO_ROOT, Settings
+from tg_bot.logger import log
+
+#: Every format `main.py subtitle-dict --formats` understands (see wordsman/cli.py).
+SUPPORTED_FORMATS = (
+    "md",
+    "tsv",
+    "json",
+    "yaml",
+    "sparsed-yaml",
+    "sparsed-json",
+    "quizlet",
+    "anki",
+    "flashcards-deluxe",
+    "wokabulary",
+    "mochi",
+    "obsidian",
+    "logseq",
+    "flashbuddy",
+)
+TEXT_SUFFIXES = {".srt", ".vtt", ".txt", ".md"}
+HTML_SUFFIXES = {".html", ".htm"}
+PDF_SUFFIXES = {".pdf"}
+SUPPORTED_SUFFIXES = TEXT_SUFFIXES | HTML_SUFFIXES | PDF_SUFFIXES
+
+# Plausible release years only (1900-2029), so titles like "Blade Runner 2049" survive.
+_YEAR_RE = re.compile(r"^(?P<title>.+?)[\s(]+(?P<year>19\d{2}|20[0-2]\d)\)?\s*$")
+_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+class PipelineError(RuntimeError):
+    """Pipeline failure carrying a user-safe message."""
+
+
+class SubtitlesNotFoundError(PipelineError):
+    """No subtitles could be fetched for the requested movie."""
+
+
+def resolve_formats(settings: Settings) -> str:
+    """All supported formats minus the configured short exception list."""
+    excluded = {f.strip().lower() for f in settings.formats_exclude}
+    unknown = excluded - set(SUPPORTED_FORMATS)
+    if unknown:
+        raise PipelineError(f"formats_exclude lists unknown formats: {sorted(unknown)}")
+    kept = [f for f in SUPPORTED_FORMATS if f not in excluded]
+    if not kept:
+        raise PipelineError("formats_exclude excludes every supported format")
+    return ",".join(kept)
+
+
+def parse_movie_query(text: str) -> tuple[str, int | None]:
+    """Split "Dune (2021)" / "Dune 2021" / "Dune" into (title, year|None)."""
+    cleaned = " ".join(text.split())
+    match = _YEAR_RE.match(cleaned)
+    if match:
+        return match.group("title").strip(" ("), int(match.group("year"))
+    return cleaned, None
+
+
+def slugify(text: str) -> str:
+    slug = _SLUG_RE.sub("-", text.lower()).strip("-")
+    return slug or "wordlists"
+
+
+class _TextExtractor(HTMLParser):
+    _SKIP = {"script", "style", "noscript"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._chunks: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in self._SKIP:
+            self._skip_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._SKIP and self._skip_depth:
+            self._skip_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip_depth and data.strip():
+            self._chunks.append(data.strip())
+
+    def text(self) -> str:
+        return "\n".join(self._chunks)
+
+
+def html_to_text(html: str) -> str:
+    parser = _TextExtractor()
+    parser.feed(html)
+    return parser.text()
+
+
+def pdf_to_text(path: Path) -> str:
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:  # pragma: no cover - dependency is declared
+        raise PipelineError("PDF support requires the pypdf package") from exc
+    try:
+        reader = PdfReader(path)
+        return "\n".join(page.extract_text() or "" for page in reader.pages)
+    except PipelineError:
+        raise
+    except Exception as exc:
+        raise PipelineError(f"Could not read PDF: {exc}") from exc
+
+
+def extract_document_text(src: Path, dest_dir: Path) -> Path:
+    """Turn an uploaded document into a file `subtitle-dict` accepts (.srt/.vtt/.txt/.md)."""
+    suffix = src.suffix.lower()
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    if suffix in TEXT_SUFFIXES:
+        dest = dest_dir / src.name
+        if src != dest:
+            shutil.copyfile(src, dest)
+        return dest
+    if suffix in HTML_SUFFIXES:
+        text = html_to_text(src.read_text(encoding="utf-8", errors="ignore"))
+    elif suffix in PDF_SUFFIXES:
+        text = pdf_to_text(src)
+    else:
+        allowed = ", ".join(sorted(SUPPORTED_SUFFIXES))
+        raise PipelineError(f"Unsupported document type '{suffix}'. Supported: {allowed}")
+    if not text.strip():
+        raise PipelineError(f"No text could be extracted from {src.name}")
+    dest = dest_dir / f"{src.stem}.txt"
+    dest.write_text(text, encoding="utf-8")
+    return dest
+
+
+def resolve_wordsman_root(settings: Settings) -> Path:
+    """Locate the parent wordsman checkout (submodule layout or TG_BOT_WORDSMAN_ROOT)."""
+    candidates = []
+    if settings.wordsman_root:
+        candidates.append(Path(settings.wordsman_root))
+    candidates.append(REPO_ROOT.parent.parent)  # <wordsman>/subproducts/tg-bot
+    for root in candidates:
+        if (root / "main.py").is_file() and (root / "scripts" / "fetch_srt.sh").is_file():
+            return root
+    raise PipelineError(
+        "wordsman checkout not found; set TG_BOT_WORDSMAN_ROOT to a repo "
+        "containing main.py and scripts/fetch_srt.sh"
+    )
+
+
+def resolve_except_list(settings: Settings) -> Path | None:
+    if settings.except_list is None:
+        return None
+    path = Path(settings.except_list)
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    return path if path.is_file() else None
+
+
+async def _run(cmd: list[str], *, timeout: float, cwd: Path) -> tuple[int, str, str]:
+    log.info("run: {}", " ".join(cmd))
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        cwd=cwd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise PipelineError(f"'{cmd[0]}' timed out after {timeout:.0f}s") from None
+    return proc.returncode or 0, stdout.decode(errors="replace"), stderr.decode(errors="replace")
+
+
+async def fetch_srt(title: str, year: int | None, settings: Settings, out_dir: Path) -> Path:
+    """Fetch the best SRT via the parent repo's fetch_srt.sh (prints the path last)."""
+    root = resolve_wordsman_root(settings)
+    cmd = ["bash", str(root / "scripts" / "fetch_srt.sh"), "--movie", title, "--out", str(out_dir)]
+    if year:
+        cmd += ["--year", str(year)]
+    code, stdout, stderr = await _run(cmd, timeout=settings.fetch_timeout, cwd=root)
+    if code != 0:
+        log.warning("fetch_srt failed ({}): {}", code, stderr[-500:])
+        raise SubtitlesNotFoundError(f"No subtitles found for '{title}'")
+    lines = [line.strip() for line in stdout.splitlines() if line.strip()]
+    srt = Path(lines[-1]) if lines else None
+    if srt is None or not srt.is_file():
+        raise PipelineError(f"Subtitle fetch for '{title}' returned no file")
+    return srt
+
+
+async def build_wordlists(
+    input_path: Path, out_dir: Path, settings: Settings, *, source_title: str
+) -> list[Path]:
+    """Run `main.py subtitle-dict` on input_path, returning the generated files."""
+    root = resolve_wordsman_root(settings)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        sys.executable,
+        str(root / "main.py"),
+        "subtitle-dict",
+        str(input_path),
+        str(out_dir),
+        "--settings",
+        str(root / "conf" / "settings.yml"),
+        "--formats",
+        resolve_formats(settings),
+        "--top",
+        str(settings.top),
+        "--source-title",
+        source_title,
+        "--source-id",
+        slugify(source_title),
+    ]
+    if settings.min_level:
+        cmd += ["--min-level", settings.min_level]
+    except_list = resolve_except_list(settings)
+    if except_list:
+        cmd += ["--except-list", str(except_list)]
+    code, _stdout, stderr = await _run(cmd, timeout=settings.dict_timeout, cwd=root)
+    if code != 0:
+        log.error("subtitle-dict failed ({}): {}", code, stderr[-800:])
+        reason = stderr.strip().splitlines()[-1] if stderr.strip() else f"exit code {code}"
+        raise PipelineError(f"Wordlist generation failed: {reason}")
+    files = sorted(p for p in out_dir.iterdir() if p.is_file())
+    if not files:
+        raise PipelineError("Wordlist generation produced no files")
+    return files
+
+
+def zip_dir(src_dir: Path, zip_path: Path) -> Path:
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path in sorted(src_dir.rglob("*")):
+            if path.is_file():
+                archive.write(path, path.relative_to(src_dir))
+    return zip_path
+
+
+def _work_dir(settings: Settings, slug: str) -> Path:
+    base = Path(settings.work_dir)
+    if not base.is_absolute():
+        base = REPO_ROOT / base
+    work = base / slug
+    if work.exists():
+        shutil.rmtree(work)
+    work.mkdir(parents=True)
+    return work
+
+
+async def movie_to_wordlists(title: str, year: int | None, settings: Settings) -> Path:
+    """Full movie flow: fetch SRT → wordlists → single ZIP; returns the ZIP path."""
+    slug = slugify(f"{title}-{year}" if year else title)
+    work = _work_dir(settings, slug)
+    srt = await fetch_srt(title, year, settings, work / "srt")
+    files = await build_wordlists(srt, work / "out", settings, source_title=title)
+    log.info("movie '{}' → {} wordlist files", title, len(files))
+    return zip_dir(work / "out", work / f"{slug}-wordlists.zip")
+
+
+async def document_to_wordlists(doc_path: Path, settings: Settings, *, title: str) -> Path:
+    """Full document flow: extract text → wordlists → single ZIP; returns the ZIP path."""
+    slug = slugify(title)
+    work = _work_dir(settings, slug)
+    prepared = extract_document_text(doc_path, work / "src")
+    files = await build_wordlists(prepared, work / "out", settings, source_title=title)
+    log.info("document '{}' → {} wordlist files", doc_path.name, len(files))
+    return zip_dir(work / "out", work / f"{slug}-wordlists.zip")

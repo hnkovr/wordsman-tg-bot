@@ -1,0 +1,21 @@
+# tg-bot defaults; every key is overridable via TG_BOT_* env vars (see src/tg_bot/config.py).
+host: "0.0.0.0"
+port: 8340
+log_level: INFO
+
+api_url: "http://localhost:8340"
+
+# Short exception list of formats NOT generated (all other supported formats are).
+formats_exclude:
+  - sparsed-yaml
+  - sparsed-json
+
+# Words listed here (with their forms) are dropped from every generated wordlist.
+except_list: config/except-words.txt
+
+top: 200
+min_level: "" # empty → wordsman conf/settings.yml default (B2)
+
+fetch_timeout: 240.0
+dict_timeout: 600.0
+max_document_mb: 20.0

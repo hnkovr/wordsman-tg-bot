@@ -1,0 +1,24 @@
+# Run from the repo root: docker compose -f deploy/docker-compose.yml up --build
+# Assumes this repo is checked out at <wordsman>/subproducts/tg-bot.
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    ports:
+      - "8340:8340"
+    volumes:
+      - ../../..:/wordsman:ro
+    environment:
+      TG_BOT_WORDSMAN_ROOT: /wordsman
+
+  bot:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: ["tg-bot", "bot"]
+    depends_on:
+      - api
+    environment:
+      TG_BOT_API_URL: http://api:8340
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}

@@ -1,0 +1,14 @@
+# Short exception words list: lemma followed by its forms (comma/space separated);
+# '#' starts a comment. Listing any form drops the whole lemma group from wordlists.
+# Same format as wordsman `subtitle-dict --except-list`.
+ok okay
+yeah yep yup
+hey
+hmm
+uh um
+huh
+gonna
+gotta
+wanna
+gimme
+ain't

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Run the wordlists API server (any args are passed to `tg-bot serve`).
+set -euo pipefail
+cd "$(dirname "$0")"
+exec uv run tg-bot serve "$@"
