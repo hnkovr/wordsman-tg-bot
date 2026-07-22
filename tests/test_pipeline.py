@@ -136,6 +136,12 @@ class TestFlows:
         with pytest.raises(SubtitlesNotFoundError):
             await pipeline.movie_to_wordlists("Nonexistent", None, settings)
 
+    async def test_srt_providers_forwarded(self, settings: Settings, tmp_path: Path) -> None:
+        settings = settings.model_copy(update={"srt_providers": ["yify", "podnapisi"]})
+        out = tmp_path / "srt"
+        await pipeline.fetch_srt("Dune", 2021, settings, out)
+        assert (out / ".providers").read_text() == "yify,podnapisi"
+
     async def test_document_flow(self, settings: Settings, tmp_path: Path) -> None:
         doc = tmp_path / "article.html"
         doc.write_text("<p>some vocabulary here</p>", encoding="utf-8")

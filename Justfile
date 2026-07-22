@@ -14,6 +14,10 @@ run-all:
 open-bot:
     bash scripts/open_bot.sh
 
+# Health-chain check; names the first broken link. --e2e adds a live sample fetch.
+doctor *args:
+    bash scripts/doctor.sh {{ args }}
+
 # Smoke-test the API against a running server (default port 8340)
 smoke port="8340":
     curl -fsS "http://localhost:{{ port }}/healthz"

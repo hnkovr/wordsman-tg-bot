@@ -15,12 +15,13 @@ FAKE_FETCH = textwrap.dedent(
     """\
     #!/usr/bin/env bash
     set -euo pipefail
-    movie="" year="" out=""
+    movie="" year="" out="" providers=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --movie) movie="$2"; shift 2 ;;
         --year) year="$2"; shift 2 ;;
         --out) out="$2"; shift 2 ;;
+        --providers) providers="$2"; shift 2 ;;
         *) shift ;;
       esac
     done
@@ -29,6 +30,7 @@ FAKE_FETCH = textwrap.dedent(
       exit 1
     fi
     mkdir -p "$out"
+    printf '%s' "$providers" > "$out/.providers"
     printf '1\\n00:00:01,000 --> 00:00:02,000\\nHello magnificent world\\n' > "$out/movie.srt"
     echo "fetched $movie ${year:-}"
     echo "$out/movie.srt"

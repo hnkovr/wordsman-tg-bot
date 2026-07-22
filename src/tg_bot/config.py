@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     service_thread_id: int | None = None
     service_notify: bool = True
 
+    # Subtitle providers forwarded to fetch_srt.sh, in priority order. yify is keyless and
+    # healthy; podnapisi is a DNS-dead fallback (wordsman#22). Override via TG_BOT_SRT_PROVIDERS.
+    srt_providers: Annotated[list[str], NoDecode] = ["yify", "podnapisi"]
+
     # Pipeline: parent wordsman checkout providing main.py + scripts/fetch_srt.sh.
     # None → auto-detected (submodule layout: <wordsman>/subproducts/tg-bot).
     wordsman_root: Path | None = None
@@ -61,7 +65,7 @@ class Settings(BaseSettings):
     dict_timeout: float = 600.0
     max_document_mb: float = 20.0  # Telegram bot API download ceiling
 
-    @field_validator("formats_exclude", mode="before")
+    @field_validator("formats_exclude", "srt_providers", mode="before")
     @classmethod
     def split_csv(cls, value: object) -> object:
         if isinstance(value, str):

@@ -16,6 +16,13 @@ except_list: config/except-words.txt
 top: 200
 min_level: "" # empty → wordsman conf/settings.yml default (B2)
 
+# Subtitle providers in priority order (forwarded to fetch_srt.sh). yify is keyless and
+# healthy; podnapisi is a DNS-dead fallback (wordsman#22). srt-search's own default is
+# podnapisi-only, so pinning this list is what makes fetches actually succeed.
+srt_providers:
+  - yify
+  - podnapisi
+
 fetch_timeout: 240.0
 dict_timeout: 600.0
 max_document_mb: 20.0

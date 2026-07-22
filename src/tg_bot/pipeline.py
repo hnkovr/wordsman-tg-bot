@@ -193,6 +193,11 @@ async def fetch_srt(title: str, year: int | None, settings: Settings, out_dir: P
     cmd = ["bash", str(root / "scripts" / "fetch_srt.sh"), "--movie", title, "--out", str(out_dir)]
     if year:
         cmd += ["--year", str(year)]
+    # Pin the provider list explicitly: srt-search's own default is podnapisi-only, whose
+    # host is DNS-dead (wordsman#22), so relying on it makes every fetch fail. yify first.
+    providers = ",".join(p.strip() for p in settings.srt_providers if p.strip())
+    if providers:
+        cmd += ["--providers", providers]
     code, stdout, stderr = await _run(cmd, timeout=settings.fetch_timeout, cwd=root)
     if code != 0:
         log.warning("fetch_srt failed ({}): {}", code, stderr[-500:])

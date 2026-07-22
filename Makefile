@@ -1,7 +1,10 @@
-.PHONY: install test lint format serve bot check
+.PHONY: install test lint format serve bot doctor check
 
 install:
 	uv sync --group dev
+
+doctor: ## Health-chain check: names the first broken link (config→root→provider→API)
+	bash scripts/doctor.sh
 
 test:
 	uv run pytest
