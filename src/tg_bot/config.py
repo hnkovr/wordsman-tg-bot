@@ -39,6 +39,12 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("TELEGRAM_BOT_TOKEN", "TG_BOT_TELEGRAM_BOT_TOKEN"),
     )
 
+    # Service chat: operational mirror of bot activity (end users still DM the bot).
+    # chat_id/thread_id come from a t.me/c/<internal>/<thread> link, see notify.py.
+    service_chat_id: int | None = None
+    service_thread_id: int | None = None
+    service_notify: bool = True
+
     # Pipeline: parent wordsman checkout providing main.py + scripts/fetch_srt.sh.
     # None → auto-detected (submodule layout: <wordsman>/subproducts/tg-bot).
     wordsman_root: Path | None = None

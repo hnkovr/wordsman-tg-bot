@@ -13,6 +13,7 @@ from aiogram.types import BufferedInputFile, Document, Message
 from tg_bot import pipeline
 from tg_bot.config import Settings, get_settings
 from tg_bot.logger import log
+from tg_bot.notify import ServiceNotifier, describe_user
 
 router = Router()
 
@@ -91,11 +92,15 @@ async def on_help(message: Message) -> None:
 @router.message(F.document)
 async def on_document(message: Message, bot: Bot) -> None:
     settings = get_settings()
+    notifier = ServiceNotifier(bot, settings)
     doc = message.document
+    who = describe_user(message)
     problem = _document_problem(doc, settings)
     if problem:
+        await notifier.send(f"⛔️ {who} sent a rejected document {doc.file_name}: {problem}")
         await message.answer(problem)
         return
+    await notifier.send(f"📄 {who} sent document {doc.file_name} — building wordlists")
     await message.answer(f"Got {doc.file_name} — building wordlists, this can take a while…")
     with tempfile.TemporaryDirectory(prefix="tg-bot-") as tmp:
         local = Path(tmp) / Path(doc.file_name).name
@@ -103,29 +108,39 @@ async def on_document(message: Message, bot: Bot) -> None:
         response = await _post_document(settings, local)
     if response.status_code == 200:
         await _reply_zip(message, response, f"{Path(doc.file_name).stem}-wordlists.zip")
+        await notifier.send(f"✅ {who}: wordlists delivered for {doc.file_name}")
     else:
-        await message.answer(_api_error_text(response))
+        error = _api_error_text(response)
+        await message.answer(error)
+        await notifier.send(f"❌ {who}: {doc.file_name} failed — {error}")
 
 
 @router.message(F.text)
-async def on_text(message: Message) -> None:
+async def on_text(message: Message, bot: Bot | None = None) -> None:
     settings = get_settings()
+    notifier = ServiceNotifier(bot, settings)
+    who = describe_user(message)
     title, year = pipeline.parse_movie_query(message.text or "")
     if not title:
         await message.answer(HELP_TEXT)
         return
     shown = f"{title} ({year})" if year else title
+    await notifier.send(f"🎬 {who} asked for “{shown}”")
     await message.answer(f"Searching subtitles for {shown} — this can take a few minutes…")
     response = await _post_movie(settings, title, year)
     if response.status_code == 200:
         await _reply_zip(message, response, f"{pipeline.slugify(shown)}-wordlists.zip")
+        await notifier.send(f"✅ {who}: wordlists delivered for “{shown}”")
     elif response.status_code == 404:
         await message.answer(
             f"I couldn't find subtitles for {shown}. Check the spelling/year, "
             "or send me the subtitles or a document directly."
         )
+        await notifier.send(f"🔍 {who}: no subtitles found for “{shown}”")
     else:
-        await message.answer(_api_error_text(response))
+        error = _api_error_text(response)
+        await message.answer(error)
+        await notifier.send(f"❌ {who}: “{shown}” failed — {error}")
 
 
 async def run_bot() -> None:  # pragma: no cover - real Telegram polling loop
@@ -135,5 +150,11 @@ async def run_bot() -> None:  # pragma: no cover - real Telegram polling loop
     bot = Bot(token=settings.telegram_bot_token)
     dp = Dispatcher()
     dp.include_router(router)
-    log.info("starting Telegram polling; api_url={}", settings.api_url)
-    await dp.start_polling(bot)
+    me = await bot.get_me()
+    notifier = ServiceNotifier(bot, settings)
+    await notifier.send(f"🟢 wordsman bot @{me.username} started (api={settings.api_url})")
+    log.info("starting Telegram polling as @{}; api_url={}", me.username, settings.api_url)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await notifier.send(f"🔴 wordsman bot @{me.username} stopped")
