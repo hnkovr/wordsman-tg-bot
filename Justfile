@@ -1,13 +1,18 @@
 # wordsman-tg-bot ops. Common short commands live in the Makefile.
 
-# Run API and bot together (Ctrl-C stops both)
+# Run API and bot together (Ctrl-C stops both), then open the Telegram chat
 run-all:
     #!/usr/bin/env bash
     set -euo pipefail
     uv run tg-bot serve &
     api_pid=$!
     trap 'kill "$api_pid" 2>/dev/null || true' EXIT
+    (sleep 2 && bash scripts/open_bot.sh) &
     uv run tg-bot bot
+
+# Open a Telegram chat with the configured bot (username resolved via getMe)
+open-bot:
+    bash scripts/open_bot.sh
 
 # Smoke-test the API against a running server (default port 8340)
 smoke port="8340":

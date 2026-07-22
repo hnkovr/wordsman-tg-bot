@@ -22,7 +22,8 @@ CONFIG_YML = REPO_ROOT / "config" / "config.yml"
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="TG_BOT_",
-        env_file=".env",
+        # Later files win: config/.env is the canonical secrets file, root .env a fallback.
+        env_file=(REPO_ROOT / ".env", REPO_ROOT / "config" / ".env"),
         yaml_file=CONFIG_YML,
         extra="ignore",
     )

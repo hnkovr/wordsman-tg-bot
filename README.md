@@ -37,9 +37,10 @@ Telegram user ⇄ bot (aiogram v3, polling)
 
 ```bash
 uv sync --group dev
-cp config/.env.template .env   # fill TELEGRAM_BOT_TOKEN
+bash config/env-render.sh      # renders config/.env; then fill TELEGRAM_BOT_TOKEN
 uv run tg-bot serve            # terminal 1: FastAPI on :8340
 uv run tg-bot bot              # terminal 2: Telegram polling
+just run-all                   # or: both at once + opens the Telegram chat
 ```
 
 Run from the wordsman checkout (`subproducts/tg-bot`) and `WORDSMAN_ROOT` is
