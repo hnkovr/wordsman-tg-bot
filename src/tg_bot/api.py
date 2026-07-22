@@ -41,6 +41,9 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except PipelineError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except Exception as exc:  # surface the real text, never a bare 500
+            log.exception("unexpected failure for movie {!r}", req.title)
+            raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
         return _zip_response(zip_path)
 
     @app.post("/api/v1/wordlists/document")
@@ -70,6 +73,9 @@ def create_app() -> FastAPI:
             zip_path = await pipeline.document_to_wordlists(saved, settings, title=Path(name).stem)
         except PipelineError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except Exception as exc:  # surface the real text, never a bare 500
+            log.exception("unexpected failure for document {!r}", name)
+            raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
         return _zip_response(zip_path)
 
     return app

@@ -155,6 +155,28 @@ class TestFlows:
             await pipeline.document_to_wordlists(doc, settings, title="bad")
 
 
+class TestStderrReason:
+    def test_picks_last_meaningful_line_over_traceback(self) -> None:
+        stderr = (
+            "Traceback (most recent call last):\n"
+            '  File "aggregator.py", line 78, in search_all\n'
+            "    raise ProviderError(...)\n"
+            "        ^^^^^^^^^^^^^^^\n"
+            "    )\n"
+            "ProviderError: all providers failed for 'X': podnapisi: transport error\n"
+        )
+        assert pipeline.stderr_reason(stderr, 1) == (
+            "ProviderError: all providers failed for 'X': podnapisi: transport error"
+        )
+
+    def test_empty_falls_back_to_exit_code(self) -> None:
+        assert pipeline.stderr_reason("   \n", 3) == "exit code 3"
+
+    async def test_fetch_error_carries_reason(self, settings: Settings, tmp_path: Path) -> None:
+        with pytest.raises(SubtitlesNotFoundError, match="no candidates"):
+            await pipeline.fetch_srt("Nonexistent", None, settings, tmp_path / "srt")
+
+
 class TestZipDir:
     def test_roundtrip(self, tmp_path: Path) -> None:
         src = tmp_path / "out"

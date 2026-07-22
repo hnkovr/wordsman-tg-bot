@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import tempfile
 from pathlib import Path
 
@@ -71,12 +72,31 @@ async def _reply_zip(message: Message, response: httpx.Response, fallback_name: 
     )
 
 
+#: Telegram rejects messages over 4096 chars; leave margin for our prefixes.
+_TG_LIMIT = 4000
+
+
+def _truncate(text: str, limit: int = _TG_LIMIT) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 def _api_error_text(response: httpx.Response) -> str:
     try:
         detail = response.json().get("detail", "")
-    except ValueError:
+    except (ValueError, AttributeError):
         detail = ""
-    return detail or f"The wordlist service failed (HTTP {response.status_code})."
+    return str(detail) if detail else f"The wordlist service failed (HTTP {response.status_code})."
+
+
+async def _report_failure(
+    message: Message, notifier: ServiceNotifier, who: str, what: str, exc: Exception
+) -> None:
+    """Surface the real error text to the user and the service chat; never re-raise."""
+    detail = f"{type(exc).__name__}: {exc}"
+    log.exception("processing failed for {} ({})", who, what)
+    with contextlib.suppress(Exception):
+        await message.answer(_truncate(f"⚠️ Sorry, processing {what} failed:\n{detail}"))
+    await notifier.send(_truncate(f"❌ {who}: {what} errored — {detail}"))
 
 
 @router.message(CommandStart())
@@ -102,17 +122,21 @@ async def on_document(message: Message, bot: Bot) -> None:
         return
     await notifier.send(f"📄 {who} sent document {doc.file_name} — building wordlists")
     await message.answer(f"Got {doc.file_name} — building wordlists, this can take a while…")
-    with tempfile.TemporaryDirectory(prefix="tg-bot-") as tmp:
-        local = Path(tmp) / Path(doc.file_name).name
-        await bot.download(doc, destination=str(local))
-        response = await _post_document(settings, local)
+    try:
+        with tempfile.TemporaryDirectory(prefix="tg-bot-") as tmp:
+            local = Path(tmp) / Path(doc.file_name).name
+            await bot.download(doc, destination=str(local))
+            response = await _post_document(settings, local)
+    except Exception as exc:  # e.g. download failure or API unreachable
+        await _report_failure(message, notifier, who, doc.file_name, exc)
+        return
     if response.status_code == 200:
         await _reply_zip(message, response, f"{Path(doc.file_name).stem}-wordlists.zip")
         await notifier.send(f"✅ {who}: wordlists delivered for {doc.file_name}")
     else:
         error = _api_error_text(response)
-        await message.answer(error)
-        await notifier.send(f"❌ {who}: {doc.file_name} failed — {error}")
+        await message.answer(_truncate(error))
+        await notifier.send(_truncate(f"❌ {who}: {doc.file_name} failed — {error}"))
 
 
 @router.message(F.text)
@@ -127,20 +151,27 @@ async def on_text(message: Message, bot: Bot | None = None) -> None:
     shown = f"{title} ({year})" if year else title
     await notifier.send(f"🎬 {who} asked for “{shown}”")
     await message.answer(f"Searching subtitles for {shown} — this can take a few minutes…")
-    response = await _post_movie(settings, title, year)
+    try:
+        response = await _post_movie(settings, title, year)
+    except Exception as exc:  # e.g. API unreachable
+        await _report_failure(message, notifier, who, f"“{shown}”", exc)
+        return
     if response.status_code == 200:
         await _reply_zip(message, response, f"{pipeline.slugify(shown)}-wordlists.zip")
         await notifier.send(f"✅ {who}: wordlists delivered for “{shown}”")
     elif response.status_code == 404:
+        detail = _api_error_text(response)
         await message.answer(
-            f"I couldn't find subtitles for {shown}. Check the spelling/year, "
-            "or send me the subtitles or a document directly."
+            _truncate(
+                f"I couldn't find subtitles for {shown}.\n{detail}\n\n"
+                "Check the spelling/year, or send me the subtitles or a document directly."
+            )
         )
-        await notifier.send(f"🔍 {who}: no subtitles found for “{shown}”")
+        await notifier.send(_truncate(f"🔍 {who}: “{shown}” — {detail}"))
     else:
         error = _api_error_text(response)
-        await message.answer(error)
-        await notifier.send(f"❌ {who}: “{shown}” failed — {error}")
+        await message.answer(_truncate(error))
+        await notifier.send(_truncate(f"❌ {who}: “{shown}” failed — {error}"))
 
 
 async def run_bot() -> None:  # pragma: no cover - real Telegram polling loop

@@ -100,16 +100,17 @@ class TestTextHandler:
         await botmod.on_text(message)
         assert message.documents == [("x-wordlists.zip", b"zipbytes")]
 
-    async def test_movie_not_found(
+    async def test_movie_not_found_shows_real_reason(
         self, fixed_settings: Settings, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         async def fake_post(*args: Any) -> FakeResponse:
-            return FakeResponse(404, detail="No subtitles found for 'X'")
+            return FakeResponse(404, detail="No subtitles found for 'X' — podnapisi DNS dead")
 
         monkeypatch.setattr(botmod, "_post_movie", fake_post)
         message = FakeMessage(text="X")
         await botmod.on_text(message)
         assert "couldn't find subtitles" in message.answers[-1]
+        assert "podnapisi DNS dead" in message.answers[-1]  # real reason surfaced
 
     async def test_service_error(
         self, fixed_settings: Settings, monkeypatch: pytest.MonkeyPatch
@@ -121,6 +122,18 @@ class TestTextHandler:
         message = FakeMessage(text="Dune")
         await botmod.on_text(message)
         assert message.answers[-1] == "pipeline broke"
+
+    async def test_api_unreachable_surfaces_exception_text(
+        self, fixed_settings: Settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def fake_post(*args: Any) -> FakeResponse:
+            raise ConnectionError("Connection refused to :8340")
+
+        monkeypatch.setattr(botmod, "_post_movie", fake_post)
+        message = FakeMessage(text="Dune")
+        await botmod.on_text(message)
+        assert "Connection refused to :8340" in message.answers[-1]
+        assert "ConnectionError" in message.answers[-1]
 
     async def test_blank_text_shows_help(self, fixed_settings: Settings) -> None:
         message = FakeMessage(text="   ")
@@ -160,6 +173,32 @@ class TestDocumentHandler:
         message = FakeMessage(document=FakeDocument())
         await botmod.on_document(message, FakeBot())
         assert message.answers[-1] == "no text"
+
+    async def test_document_download_failure_surfaces_text(
+        self, fixed_settings: Settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class BrokenBot(FakeBot):
+            async def download(self, doc: FakeDocument, destination: str) -> None:
+                raise OSError("download timed out")
+
+        async def fake_post(*args: Any) -> FakeResponse:  # should never be reached
+            raise AssertionError("post must not run after a download failure")
+
+        monkeypatch.setattr(botmod, "_post_document", fake_post)
+        message = FakeMessage(document=FakeDocument())
+        await botmod.on_document(message, BrokenBot())
+        assert "download timed out" in message.answers[-1]
+        assert "OSError" in message.answers[-1]
+
+
+class TestTruncate:
+    def test_short_untouched(self) -> None:
+        assert botmod._truncate("hi") == "hi"
+
+    def test_long_clipped_with_ellipsis(self) -> None:
+        out = botmod._truncate("x" * 5000)
+        assert len(out) == botmod._TG_LIMIT
+        assert out.endswith("…")
 
 
 def test_get_settings_cached() -> None:

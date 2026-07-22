@@ -76,3 +76,18 @@ def test_document_pipeline_failure(client: TestClient) -> None:
         files={"file": ("bad.txt", b"EXPLODE", "text/plain")},
     )
     assert response.status_code == 502
+
+
+def test_movie_unexpected_error_surfaces_real_text(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def boom(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("disk is on fire")
+
+    monkeypatch.setattr("tg_bot.api.pipeline.movie_to_wordlists", boom)
+    app = create_app()
+    app.dependency_overrides[get_settings] = lambda: settings
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.post("/api/v1/wordlists/movie", json={"title": "Dune"})
+    assert response.status_code == 500
+    assert response.json()["detail"] == "RuntimeError: disk is on fire"

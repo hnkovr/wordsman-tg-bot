@@ -170,6 +170,20 @@ def resolve_except_list(settings: Settings) -> Path | None:
     return path if path.is_file() else None
 
 
+def stderr_reason(stderr: str, code: int) -> str:
+    """Pull the most useful one-liner out of a subprocess' stderr for a user-facing error.
+
+    Prefers the last non-traceback-scaffolding line (e.g. the `ProviderError: …` message)
+    over the raw tail; falls back to the exit code when stderr is empty.
+    """
+    meaningful = [
+        line.strip()
+        for line in stderr.splitlines()
+        if line.strip() and not line.lstrip().startswith(('File "', "^", "Traceback", ")"))
+    ]
+    return meaningful[-1] if meaningful else f"exit code {code}"
+
+
 async def _run(cmd: list[str], *, timeout: float, cwd: Path) -> tuple[int, str, str]:
     log.info("run: {}", " ".join(cmd))
     proc = await asyncio.create_subprocess_exec(
@@ -201,7 +215,8 @@ async def fetch_srt(title: str, year: int | None, settings: Settings, out_dir: P
     code, stdout, stderr = await _run(cmd, timeout=settings.fetch_timeout, cwd=root)
     if code != 0:
         log.warning("fetch_srt failed ({}): {}", code, stderr[-500:])
-        raise SubtitlesNotFoundError(f"No subtitles found for '{title}'")
+        reason = stderr_reason(stderr, code)
+        raise SubtitlesNotFoundError(f"No subtitles found for '{title}' — {reason}")
     lines = [line.strip() for line in stdout.splitlines() if line.strip()]
     srt = Path(lines[-1]) if lines else None
     if srt is None or not srt.is_file():
@@ -240,8 +255,7 @@ async def build_wordlists(
     code, _stdout, stderr = await _run(cmd, timeout=settings.dict_timeout, cwd=root)
     if code != 0:
         log.error("subtitle-dict failed ({}): {}", code, stderr[-800:])
-        reason = stderr.strip().splitlines()[-1] if stderr.strip() else f"exit code {code}"
-        raise PipelineError(f"Wordlist generation failed: {reason}")
+        raise PipelineError(f"Wordlist generation failed: {stderr_reason(stderr, code)}")
     files = sorted(p for p in out_dir.iterdir() if p.is_file())
     if not files:
         raise PipelineError("Wordlist generation produced no files")
