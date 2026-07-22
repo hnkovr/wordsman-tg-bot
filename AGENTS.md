@@ -9,3 +9,17 @@
   `config/.env.template` must keep blank values.
 - Mirror `wordsman-srt-api` conventions: pydantic-settings, loguru, click CLI,
   FastAPI `create_app()`, hatchling `src/` layout, pytest coverage ≥ 85%.
+
+<!-- tg-bot-service-chat:begin (auto-upsert via .tmp/upsert_tg_bot.py) -->
+
+## Service chat & secrets
+
+- Bot activity is mirrored into the service chat configured by `TG_BOT_SERVICE_CHAT_ID`
+  (+ optional `TG_BOT_SERVICE_THREAD_ID`); end users always interact with the bot directly.
+- `ServiceNotifier.send()` must never raise into a handler — notification failures are
+  logged and swallowed by design; keep it that way when adding call sites.
+- Secrets (`TELEGRAM_BOT_TOKEN`, chat ids) live only in the gitignored `config/.env`,
+  rendered from `config/.env.template` via `config/env-render.sh`. The template keeps blank
+  or `${VAR:-default}` forms — a literal value there is a leak.
+
+<!-- tg-bot-service-chat:end -->

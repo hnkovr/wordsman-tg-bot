@@ -9,3 +9,7 @@ downloads/
 .coverage
 dist/
 .DS_Store
+
+# --- tmp-dir:begin (auto-upsert via .tmp/upsert_tg_bot.py) ---
+.tmp/
+# --- tmp-dir:end ---
