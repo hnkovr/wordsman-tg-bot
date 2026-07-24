@@ -19,14 +19,26 @@ class FakeDocument:
 
 
 @dataclass
+class FakeUser:
+    id: int = 7
+    username: str | None = "tester"
+
+
+@dataclass
 class FakeMessage:
     text: str | None = None
     document: FakeDocument | None = None
+    from_user: FakeUser | None = field(default_factory=FakeUser)
     answers: list[str] = field(default_factory=list)
     documents: list[tuple[str, bytes]] = field(default_factory=list)
+    markups: list[Any] = field(default_factory=list)
 
-    async def answer(self, text: str) -> None:
+    async def answer(
+        self, text: str, reply_markup: Any = None, parse_mode: str | None = None
+    ) -> None:
         self.answers.append(text)
+        if reply_markup is not None:
+            self.markups.append(reply_markup)
 
     async def answer_document(self, input_file: Any, caption: str = "") -> None:
         self.documents.append((input_file.filename, input_file.data))
@@ -91,8 +103,10 @@ class TestTextHandler:
     async def test_movie_success(
         self, fixed_settings: Settings, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        async def fake_post(settings: Settings, title: str, year: int | None) -> FakeResponse:
-            assert (title, year) == ("Dune", 2021)
+        async def fake_post(
+            settings: Settings, title: str, year: int | None, user_id: int | None
+        ) -> FakeResponse:
+            assert (title, year, user_id) == ("Dune", 2021, 7)
             return FakeResponse(200, content=b"zipbytes")
 
         monkeypatch.setattr(botmod, "_post_movie", fake_post)
@@ -147,7 +161,7 @@ class TestDocumentHandler:
     ) -> None:
         posted: dict[str, bytes] = {}
 
-        async def fake_post(settings: Settings, path: Path) -> FakeResponse:
+        async def fake_post(settings: Settings, path: Path, user_id: int | None) -> FakeResponse:
             posted[path.name] = path.read_bytes()
             return FakeResponse(200, content=b"zipbytes")
 
@@ -189,6 +203,48 @@ class TestDocumentHandler:
         await botmod.on_document(message, BrokenBot())
         assert "download timed out" in message.answers[-1]
         assert "OSError" in message.answers[-1]
+
+
+class TestSettingsMenu:
+    async def test_settings_command_shows_keyboard(self, fixed_settings: Settings) -> None:
+        message = FakeMessage(text="/settings")
+        await botmod.on_settings(message)
+        assert "Your settings" in message.answers[0]
+        assert message.markups  # an inline keyboard was attached
+
+    async def test_reset_command(self, fixed_settings: Settings) -> None:
+        from tg_bot.store import get_store
+
+        get_store(fixed_settings).set(7, min_level="C1")
+        message = FakeMessage(text="/reset")
+        await botmod.on_reset(message)
+        assert get_store(fixed_settings).get(7).min_level is None
+        assert "reset to defaults" in message.answers[0].lower()
+
+    async def test_callback_sets_level(self, fixed_settings: Settings) -> None:
+        from tg_bot.store import get_store
+
+        @dataclass
+        class FakeCallbackMessage:
+            edits: list[str] = field(default_factory=list)
+
+            async def edit_text(self, text: str, reply_markup: Any = None, **kw: Any) -> None:
+                self.edits.append(text)
+
+        @dataclass
+        class FakeCallback:
+            data: str
+            from_user: FakeUser = field(default_factory=FakeUser)
+            message: FakeCallbackMessage = field(default_factory=FakeCallbackMessage)
+            answered: bool = False
+
+            async def answer(self, *a: Any, **k: Any) -> None:
+                self.answered = True
+
+        cb = FakeCallback(data="s:level:B2")
+        await botmod.on_menu_callback(cb)
+        assert get_store(fixed_settings).get(7).min_level == "B2"
+        assert cb.answered and cb.message.edits
 
 
 class TestTruncate:

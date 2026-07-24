@@ -26,3 +26,6 @@ srt_providers:
 fetch_timeout: 240.0
 dict_timeout: 600.0
 max_document_mb: 20.0
+
+# Per-user preferences DB (multi-user mode); shared by the bot and the API.
+db_path: data/tg_bot.sqlite3

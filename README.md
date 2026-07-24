@@ -30,8 +30,26 @@ Telegram user ⇄ bot (aiogram v3, polling)
 | Endpoint | Body | Returns |
 | --- | --- | --- |
 | `GET /healthz` | — | service status |
-| `POST /api/v1/wordlists/movie` | `{"title": "Dune", "year": 2021}` | ZIP of wordlists (404 = no subtitles) |
-| `POST /api/v1/wordlists/document` | multipart `file` | ZIP of wordlists |
+| `POST /api/v1/wordlists/movie` | `{"title": "Dune", "year": 2021, "user_id": 42}` | ZIP of wordlists (404 = no subtitles) |
+| `POST /api/v1/wordlists/document` | multipart `file` (+ optional `user_id`) | ZIP of wordlists |
+
+`user_id` is optional; when present the request uses that user's saved preferences and
+an isolated work directory.
+
+## Multi-user preferences
+
+Each Telegram user gets their own settings, stored in a shared SQLite DB
+(`db_path`, default `data/tg_bot.sqlite3`) that the bot writes and the API reads. Users
+manage them from the bot's command menu:
+
+- **/settings** — an inline-keyboard menu to set the minimum CEFR **level**, the **max
+  words** per list, and which export **formats** to include (toggle per format)
+- **/reset** — restore the global defaults
+- **/help** — usage
+
+Unset preferences inherit the global `config.yml` defaults (the DB stores only explicit
+overrides). Each user's generation runs in its own `work/<user_id>/` namespace, so
+concurrent requests for the same title don't collide.
 
 ## Quickstart
 

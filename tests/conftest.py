@@ -82,7 +82,16 @@ def settings(fake_wordsman_root: Path, tmp_path: Path) -> Settings:
     return Settings(
         wordsman_root=fake_wordsman_root,
         work_dir=tmp_path / "work",
+        db_path=tmp_path / "prefs.sqlite3",
         except_list=None,
         fetch_timeout=30.0,
         dict_timeout=30.0,
     )
+
+
+@pytest.fixture
+def store(settings: Settings):
+    """A PrefStore on the isolated per-test DB path."""
+    from tg_bot.store import PrefStore, resolve_db_path
+
+    return PrefStore(resolve_db_path(settings))

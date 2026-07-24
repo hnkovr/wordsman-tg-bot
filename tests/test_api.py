@@ -33,6 +33,25 @@ def test_movie_returns_zip(client: TestClient) -> None:
     assert "subtitle-dictionary.md" in names
 
 
+def test_movie_applies_user_prefs(client: TestClient, settings: Settings) -> None:
+    from tg_bot.store import get_store
+
+    get_store(settings).set(99, formats_exclude=["anki", "mochi"])
+    response = client.post("/api/v1/wordlists/movie", json={"title": "Dune", "user_id": 99})
+    assert response.status_code == 200
+    names = zipfile.ZipFile(io.BytesIO(response.content)).namelist()
+    assert "anki.out" not in names and "mochi.out" not in names  # user's exclusions honored
+    assert "quizlet.out" in names  # non-excluded format still present
+
+
+def test_movie_scope_namespaces_work_dir(client: TestClient, settings: Settings) -> None:
+    from tg_bot.pipeline import slugify
+
+    client.post("/api/v1/wordlists/movie", json={"title": "Dune", "user_id": 99})
+    scoped = settings.work_dir / slugify("99")
+    assert scoped.is_dir()  # this user's scratch lives under their own namespace
+
+
 def test_movie_not_found(client: TestClient) -> None:
     response = client.post("/api/v1/wordlists/movie", json={"title": "Nonexistent"})
     assert response.status_code == 404

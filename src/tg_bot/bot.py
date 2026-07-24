@@ -9,12 +9,22 @@ from pathlib import Path
 import httpx
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command, CommandStart
-from aiogram.types import BufferedInputFile, Document, Message
+from aiogram.types import (
+    BotCommand,
+    BufferedInputFile,
+    CallbackQuery,
+    Document,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
-from tg_bot import pipeline
+from tg_bot import menu, pipeline
 from tg_bot.config import Settings, get_settings
 from tg_bot.logger import log
+from tg_bot.menu import Row
 from tg_bot.notify import ServiceNotifier, describe_user
+from tg_bot.store import get_store
 
 router = Router()
 
@@ -23,8 +33,19 @@ HELP_TEXT = (
     "fetch its subtitles and reply with vocabulary wordlists in every supported "
     "format (Anki, Quizlet, Mochi, Obsidian, …).\n\n"
     "Or send a document — .pdf, .html, .srt, .vtt, .txt, .md — and I will build "
-    "the wordlists from its text instead."
+    "the wordlists from its text instead.\n\n"
+    "Commands:\n"
+    "• /settings — adjust your level, word count and formats\n"
+    "• /reset — restore default settings\n"
+    "• /help — show this message"
 )
+
+#: The "/" command menu shown in Telegram clients.
+BOT_COMMANDS = [
+    BotCommand(command="settings", description="Adjust your level, word count and formats"),
+    BotCommand(command="reset", description="Restore default settings"),
+    BotCommand(command="help", description="How to use this bot"),
+]
 
 
 def _document_problem(doc: Document, settings: Settings) -> str | None:
@@ -44,21 +65,38 @@ def _api_timeout(settings: Settings) -> float:
     return settings.fetch_timeout + settings.dict_timeout + 30.0
 
 
-async def _post_movie(settings: Settings, title: str, year: int | None) -> httpx.Response:
+async def _post_movie(
+    settings: Settings, title: str, year: int | None, user_id: int | None
+) -> httpx.Response:
     async with httpx.AsyncClient(timeout=_api_timeout(settings)) as client:
         return await client.post(
             f"{settings.api_url}/api/v1/wordlists/movie",
-            json={"title": title, "year": year},
+            json={"title": title, "year": year, "user_id": user_id},
         )
 
 
-async def _post_document(settings: Settings, path: Path) -> httpx.Response:
+async def _post_document(settings: Settings, path: Path, user_id: int | None) -> httpx.Response:
+    data = {"user_id": str(user_id)} if user_id is not None else None
     async with httpx.AsyncClient(timeout=_api_timeout(settings)) as client:
         with path.open("rb") as payload:
             return await client.post(
                 f"{settings.api_url}/api/v1/wordlists/document",
                 files={"file": (path.name, payload)},
+                data=data,
             )
+
+
+def _markup(rows: list[Row]) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=label, callback_data=data) for label, data in row]
+            for row in rows
+        ]
+    )
+
+
+def _user_id(message: Message) -> int | None:
+    return message.from_user.id if message.from_user else None
 
 
 async def _reply_zip(message: Message, response: httpx.Response, fallback_name: str) -> None:
@@ -109,6 +147,40 @@ async def on_help(message: Message) -> None:
     await message.answer(HELP_TEXT)
 
 
+@router.message(Command("settings"))
+async def on_settings(message: Message) -> None:
+    settings = get_settings()
+    prefs = get_store(settings).get(_user_id(message) or 0)
+    text, rows = menu.root_view(prefs, settings)
+    await message.answer(text, reply_markup=_markup(rows), parse_mode="Markdown")
+
+
+@router.message(Command("reset"))
+async def on_reset(message: Message) -> None:
+    settings = get_settings()
+    store = get_store(settings)
+    uid = _user_id(message) or 0
+    store.reset(uid)
+    text, rows = menu.root_view(store.get(uid), settings)
+    await message.answer(
+        "Settings reset to defaults.\n\n" + text,
+        reply_markup=_markup(rows),
+        parse_mode="Markdown",
+    )
+
+
+@router.callback_query(F.data.startswith(("m:", "s:", "t:")))
+async def on_menu_callback(callback: CallbackQuery) -> None:
+    settings = get_settings()
+    user = callback.from_user
+    text, rows = menu.handle_callback(
+        get_store(settings), user.id, user.username or "", callback.data or "", settings
+    )
+    with contextlib.suppress(Exception):  # ignore "message is not modified"
+        await callback.message.edit_text(text, reply_markup=_markup(rows), parse_mode="Markdown")
+    await callback.answer()
+
+
 @router.message(F.document)
 async def on_document(message: Message, bot: Bot) -> None:
     settings = get_settings()
@@ -126,7 +198,7 @@ async def on_document(message: Message, bot: Bot) -> None:
         with tempfile.TemporaryDirectory(prefix="tg-bot-") as tmp:
             local = Path(tmp) / Path(doc.file_name).name
             await bot.download(doc, destination=str(local))
-            response = await _post_document(settings, local)
+            response = await _post_document(settings, local, _user_id(message))
     except Exception as exc:  # e.g. download failure or API unreachable
         await _report_failure(message, notifier, who, doc.file_name, exc)
         return
@@ -152,7 +224,7 @@ async def on_text(message: Message, bot: Bot | None = None) -> None:
     await notifier.send(f"🎬 {who} asked for “{shown}”")
     await message.answer(f"Searching subtitles for {shown} — this can take a few minutes…")
     try:
-        response = await _post_movie(settings, title, year)
+        response = await _post_movie(settings, title, year, _user_id(message))
     except Exception as exc:  # e.g. API unreachable
         await _report_failure(message, notifier, who, f"“{shown}”", exc)
         return
@@ -182,6 +254,7 @@ async def run_bot() -> None:  # pragma: no cover - real Telegram polling loop
     dp = Dispatcher()
     dp.include_router(router)
     me = await bot.get_me()
+    await bot.set_my_commands(BOT_COMMANDS)
     notifier = ServiceNotifier(bot, settings)
     await notifier.send(f"🟢 wordsman bot @{me.username} started (api={settings.api_url})")
     log.info("starting Telegram polling as @{}; api_url={}", me.username, settings.api_url)

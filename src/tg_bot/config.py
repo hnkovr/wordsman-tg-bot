@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     # None → auto-detected (submodule layout: <wordsman>/subproducts/tg-bot).
     wordsman_root: Path | None = None
     work_dir: Path = Path("work")
+    # Per-user preferences DB (multi-user mode); shared by the bot and the API.
+    db_path: Path = Path("data/tg_bot.sqlite3")
 
     # Wordlist generation: every supported format minus this short exception list,
     # plus an except-words file dropped from the lists entirely.

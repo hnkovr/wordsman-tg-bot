@@ -271,31 +271,37 @@ def zip_dir(src_dir: Path, zip_path: Path) -> Path:
     return zip_path
 
 
-def _work_dir(settings: Settings, slug: str) -> Path:
+def _work_dir(settings: Settings, slug: str, scope: str | None = None) -> Path:
     base = Path(settings.work_dir)
     if not base.is_absolute():
         base = REPO_ROOT / base
-    work = base / slug
+    # Namespace by scope (the requesting user) so concurrent requests for the same
+    # title don't clobber each other's scratch directory.
+    work = (base / slugify(scope) / slug) if scope else (base / slug)
     if work.exists():
         shutil.rmtree(work)
     work.mkdir(parents=True)
     return work
 
 
-async def movie_to_wordlists(title: str, year: int | None, settings: Settings) -> Path:
+async def movie_to_wordlists(
+    title: str, year: int | None, settings: Settings, *, scope: str | None = None
+) -> Path:
     """Full movie flow: fetch SRT → wordlists → single ZIP; returns the ZIP path."""
     slug = slugify(f"{title}-{year}" if year else title)
-    work = _work_dir(settings, slug)
+    work = _work_dir(settings, slug, scope)
     srt = await fetch_srt(title, year, settings, work / "srt")
     files = await build_wordlists(srt, work / "out", settings, source_title=title)
     log.info("movie '{}' → {} wordlist files", title, len(files))
     return zip_dir(work / "out", work / f"{slug}-wordlists.zip")
 
 
-async def document_to_wordlists(doc_path: Path, settings: Settings, *, title: str) -> Path:
+async def document_to_wordlists(
+    doc_path: Path, settings: Settings, *, title: str, scope: str | None = None
+) -> Path:
     """Full document flow: extract text → wordlists → single ZIP; returns the ZIP path."""
     slug = slugify(title)
-    work = _work_dir(settings, slug)
+    work = _work_dir(settings, slug, scope)
     prepared = extract_document_text(doc_path, work / "src")
     files = await build_wordlists(prepared, work / "out", settings, source_title=title)
     log.info("document '{}' → {} wordlist files", doc_path.name, len(files))

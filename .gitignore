@@ -4,6 +4,7 @@ __pycache__/
 .run/
 .env
 work/
+data/
 downloads/
 .pytest_cache/
 .coverage
