@@ -36,6 +36,35 @@ class TestViews:
         assert any("⬜️ sparsed-yaml" in lbl for lbl in labels)  # excluded by default
 
 
+class TestFilesMenu:
+    def test_files_view_has_three_separate_items(self, settings: Settings) -> None:
+        _text, rows = menu.files_view(settings)
+        datas = _datas(rows)
+        assert {"m:files:sub", "m:files:wl", "m:files:au"} <= set(datas)
+        assert "m:root" in datas  # back button
+
+    def test_files_list_empty(self, settings: Settings) -> None:
+        text, rows = menu.files_list_view(settings, "sub")
+        assert "No subtitles" in text
+        assert _datas(rows) == ["m:files"]
+
+    def test_files_list_populated(self, settings: Settings) -> None:
+        wl = settings.work_dir / "dune" / "dune-wordlists.zip"
+        wl.parent.mkdir(parents=True)
+        wl.write_bytes(b"zip")
+        text, rows = menu.files_list_view(settings, "wl")
+        assert "Available wordlists (1)" in text
+        assert any(d.startswith("g:wl:") for d in _datas(rows))
+
+    def test_callback_opens_files_menu(self, settings: Settings, store: PrefStore) -> None:
+        text, _rows = menu.handle_callback(store, 1, "u", "m:files", settings)
+        assert "pick a type" in text
+
+    def test_callback_opens_files_list(self, settings: Settings, store: PrefStore) -> None:
+        text, _rows = menu.handle_callback(store, 1, "u", "m:files:sub", settings)
+        assert "subtitles" in text.lower()
+
+
 class TestCallbacks:
     def test_navigate_to_submenu(self, settings: Settings, store: PrefStore) -> None:
         text, _rows = menu.handle_callback(store, 1, "u", "m:level", settings)

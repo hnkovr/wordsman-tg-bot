@@ -7,7 +7,7 @@ here. Keeping this aiogram-free makes the whole menu unit-testable without a bot
 
 from __future__ import annotations
 
-from tg_bot import pipeline
+from tg_bot import artifacts, pipeline
 from tg_bot.config import Settings
 from tg_bot.store import Prefs, PrefStore
 
@@ -16,6 +16,13 @@ View = tuple[str, list[Row]]
 
 LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"]
 TOP_CHOICES = [50, 100, 200, 300, 500]
+
+#: Send-menu kinds: callback-code -> (emoji, label, artifacts kind). Three separate items.
+KIND_LABELS = {
+    "sub": ("📄", "Subtitles", "subtitle"),
+    "wl": ("🗂", "Wordlists", "wordlist"),
+    "au": ("🔊", "Audio", "audio"),
+}
 
 
 def _level(prefs: Prefs, settings: Settings) -> str:
@@ -50,9 +57,32 @@ def root_view(prefs: Prefs, settings: Settings) -> View:
         [(f"🎚 Level: {_level(prefs, settings)}", "m:level")],
         [(f"🔢 Max words: {_top(prefs, settings)}", "m:top")],
         [(f"🗂 Formats: {enabled} enabled", "m:formats")],
+        [("📤 Send available files", "m:files")],
         [("♻️ Reset to defaults", "s:reset")],
     ]
     return settings_text(prefs, settings), rows
+
+
+def files_view(settings: Settings) -> View:
+    """The send-menu root: three separate items, one per artifact kind."""
+    rows: list[Row] = [
+        [(f"{emoji} {label}", f"m:files:{code}")]
+        for code, (emoji, label, _kind) in KIND_LABELS.items()
+    ]
+    rows.append([("‹ Back", "m:root")])
+    return "📤 Send available files — pick a type:", rows
+
+
+def files_list_view(settings: Settings, code: str) -> View:
+    """List the on-disk artifacts of one kind as 'get' buttons."""
+    emoji, label, kind = KIND_LABELS[code]
+    items = artifacts.available(settings, kind)
+    if not items:
+        hint = f"No {label.lower()} generated yet — send me a movie title first."
+        return hint, [[("‹ Back", "m:files")]]
+    rows: list[Row] = [[(f"{emoji} {a.slug}", f"g:{code}:{i}")] for i, a in enumerate(items)]
+    rows.append([("‹ Back", "m:files")])
+    return f"Available {label.lower()} ({len(items)}) — tap to receive:", rows
 
 
 def _chunk(buttons: Row, per_row: int) -> list[Row]:
@@ -95,6 +125,9 @@ def handle_callback(
     """Apply a callback to the user's prefs and return the view to render next."""
     parts = data.split(":")
     kind = parts[0]
+
+    if kind == "m" and parts[1] == "files":
+        return files_list_view(settings, parts[2]) if len(parts) > 2 else files_view(settings)
 
     if kind == "m":
         return _SUBMENUS.get(parts[1], root_view)(store.get(user_id), settings)

@@ -14,12 +14,13 @@ from aiogram.types import (
     BufferedInputFile,
     CallbackQuery,
     Document,
+    FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
 )
 
-from tg_bot import menu, pipeline
+from tg_bot import artifacts, menu, pipeline
 from tg_bot.config import Settings, get_settings
 from tg_bot.logger import log
 from tg_bot.menu import Row
@@ -35,6 +36,7 @@ HELP_TEXT = (
     "Or send a document — .pdf, .html, .srt, .vtt, .txt, .md — and I will build "
     "the wordlists from its text instead.\n\n"
     "Commands:\n"
+    "• /files — send already-generated subtitles, wordlists or audio\n"
     "• /settings — adjust your level, word count and formats\n"
     "• /reset — restore default settings\n"
     "• /help — show this message"
@@ -42,6 +44,7 @@ HELP_TEXT = (
 
 #: The "/" command menu shown in Telegram clients.
 BOT_COMMANDS = [
+    BotCommand(command="files", description="Send available subtitles, wordlists or audio"),
     BotCommand(command="settings", description="Adjust your level, word count and formats"),
     BotCommand(command="reset", description="Restore default settings"),
     BotCommand(command="help", description="How to use this bot"),
@@ -169,12 +172,41 @@ async def on_reset(message: Message) -> None:
     )
 
 
-@router.callback_query(F.data.startswith(("m:", "s:", "t:")))
+@router.message(Command("files"))
+async def on_files(message: Message) -> None:
+    text, rows = menu.files_view(get_settings())
+    await message.answer(text, reply_markup=_markup(rows))
+
+
+async def _send_artifact(callback: CallbackQuery, data: str, settings: Settings) -> None:
+    """Handle a `g:<code>:<index>` callback: send the chosen on-disk file."""
+    try:
+        _, code, index = data.split(":")
+        kind = menu.KIND_LABELS[code][2]
+        item = artifacts.available(settings, kind)[int(index)]
+    except (ValueError, KeyError, IndexError):
+        await callback.answer("That file is no longer available.", show_alert=True)
+        return
+    if item.size > artifacts.MAX_SEND_BYTES:
+        mb = item.size // (1024 * 1024)
+        await callback.answer(f"Too large to send over Telegram ({mb} MB).", show_alert=True)
+        return
+    await callback.message.answer_document(
+        FSInputFile(item.path), caption=f"{item.slug} — {item.path.name}"
+    )
+    await callback.answer("Sent ✓")
+
+
+@router.callback_query(F.data.startswith(("m:", "s:", "t:", "g:")))
 async def on_menu_callback(callback: CallbackQuery) -> None:
     settings = get_settings()
+    data = callback.data or ""
+    if data.startswith("g:"):
+        await _send_artifact(callback, data, settings)
+        return
     user = callback.from_user
     text, rows = menu.handle_callback(
-        get_store(settings), user.id, user.username or "", callback.data or "", settings
+        get_store(settings), user.id, user.username or "", data, settings
     )
     with contextlib.suppress(Exception):  # ignore "message is not modified"
         await callback.message.edit_text(text, reply_markup=_markup(rows), parse_mode="Markdown")

@@ -247,6 +247,55 @@ class TestSettingsMenu:
         assert cb.answered and cb.message.edits
 
 
+class TestFilesMenu:
+    async def test_files_command_shows_three_items(self, fixed_settings: Settings) -> None:
+        message = FakeMessage(text="/files")
+        await botmod.on_files(message)
+        assert "pick a type" in message.answers[0]
+        assert message.markups
+
+    async def test_send_artifact_sends_file(self, fixed_settings: Settings) -> None:
+        wl = fixed_settings.work_dir / "dune" / "dune-wordlists.zip"
+        wl.parent.mkdir(parents=True)
+        wl.write_bytes(b"zip-bytes")
+
+        sent: list[Any] = []
+        answered: list[str] = []
+
+        @dataclass
+        class CbMessage:
+            async def answer_document(self, input_file: Any, caption: str = "") -> None:
+                sent.append((input_file, caption))
+
+        @dataclass
+        class Cb:
+            data: str
+            message: CbMessage = field(default_factory=CbMessage)
+            from_user: FakeUser = field(default_factory=FakeUser)
+
+            async def answer(self, text: str = "", show_alert: bool = False) -> None:
+                answered.append(text)
+
+        await botmod.on_menu_callback(Cb(data="g:wl:0"))
+        assert sent and sent[0][1].startswith("dune")  # caption names the item
+        assert answered == ["Sent ✓"]
+
+    async def test_send_artifact_gone(self, fixed_settings: Settings) -> None:
+        alerts: list[tuple[str, bool]] = []
+
+        @dataclass
+        class Cb:
+            data: str = "g:wl:0"
+            from_user: FakeUser = field(default_factory=FakeUser)
+
+            async def answer(self, text: str = "", show_alert: bool = False) -> None:
+                alerts.append((text, show_alert))
+
+        await botmod.on_menu_callback(Cb())  # no zip on disk → index error path
+        assert alerts and alerts[0][1] is True
+        assert "no longer available" in alerts[0][0].lower()
+
+
 class TestTruncate:
     def test_short_untouched(self) -> None:
         assert botmod._truncate("hi") == "hi"
