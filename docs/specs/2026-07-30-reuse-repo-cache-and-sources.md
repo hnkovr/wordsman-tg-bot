@@ -1,6 +1,15 @@
 # tg-bot: reuse repo cache (data/in, data/out) + widen fetch sources + tiered logging
 
-Status: TODO (captured pre-compaction 2026-07-30). Both repos clean+pushed at capture time.
+Status: **DONE** (implemented 2026-07-30, same day as capture). Verified live:
+
+- `odyssey (2026)` — previously a hard failure — now serves 18 files instantly from
+  `data/out/odyssey-2026` (repo cache HIT, no generation).
+- `The Odyssey (2026)` live fetch (cache bypassed) now succeeds via the widened providers:
+  `the-odyssey-the-making-of-an-epic-2026-1080p-webrip-x264-aac5-1-lama-en.srt`.
+- 130 tests green (18 new in `tests/test_repo_cache.py`), ruff clean.
+
+Answered open question: the onlyflix SRT came from **subtitlecat** (its download links are
+`…-<lang>.srt`, matching `…-1080p-en.srt`), which the bot's old `yify,podnapisi` set omitted.
 
 ## Why (the trigger)
 

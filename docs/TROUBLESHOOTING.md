@@ -19,15 +19,34 @@ just doctor --e2e      # + a live sample fetch (slow, hits the network)
 | 4. API | `/healthz` answers | service not started (`make tg-bot-serve`) |
 | 5. e2e | a known-good title fetches an SRT | see layer 3 |
 
+## Repo cache (data/in, data/out)
+
+Before any network call the bot reuses the wordsman checkout's own artifacts:
+
+| Cache | Path | Effect |
+| --- | --- | --- |
+| Subtitles | `data/in/<slug>/*.srt` | skips the network fetch entirely |
+| Wordlists | `data/out/<slug>/` | served verbatim — no generation — but **only** when the user's level/top/formats are the global defaults; customised prefs regenerate |
+
+Those blobs live in **Git-LFS**, so a deploy host that never pulled the LFS objects has no
+cache: unfetched pointers and an absent `data/` both log a WARNING and degrade to a live
+fetch. Knobs: `TG_BOT_USE_REPO_CACHE` (default true), `TG_BOT_REPO_DATA_DIR` (default
+`<wordsman_root>/data`). Set `TG_BOT_LOG_LEVEL=DEBUG` to see every probe and decision —
+DEBUG per path probed, INFO on hits and the chosen path, WARNING on degrades.
+
 ## The provider trap (most common)
 
 srt-search's **own default provider list is `podnapisi` only** (`config.py:31`), and its
 host `www.podnapisi.net` no longer resolves. A bot relying on that default 404s on every
 title while yify — keyless and healthy — sits unused.
 
-The fix lives in this repo, not the library: `TG_BOT_SRT_PROVIDERS` (config `srt_providers`,
-default `yify,podnapisi`) is forwarded to `fetch_srt.sh --providers`, so yify is tried
-first regardless of srt-search's default. Symptom in the polling log:
+The fix lives in this repo, not the library: `TG_BOT_SRT_PROVIDERS` (config
+`srt_providers`, default **`gestdown,yify,subtitlecat`** — the same set the CLI/skill flow
+uses, per `english-apps/apps_pipeline.yml`) is forwarded to `fetch_srt.sh --providers`, so
+the healthy providers are tried regardless of srt-search's default. gestdown covers TV
+episodes; yify and subtitlecat cover films — subtitlecat in particular is what fetched
+`data/in/odyssey-2026`, and a narrower `yify,podnapisi` set fails on titles it can serve.
+Symptom in the polling log:
 
 ```
 ProviderError: all providers failed for 'Inception':
