@@ -201,6 +201,99 @@ async def _run(cmd: list[str], *, timeout: float, cwd: Path) -> tuple[int, str, 
     return proc.returncode or 0, stdout.decode(errors="replace"), stderr.decode(errors="replace")
 
 
+def resolve_repo_data_dir(settings: Settings) -> Path | None:
+    """The wordsman checkout's data/ dir, or None when the repo cache is unusable here.
+
+    The cached blobs live in Git-LFS, so a deploy host that never pulled the LFS objects
+    has no cache — that is a normal degrade to a live fetch, not an error.
+    """
+    if not settings.use_repo_cache:
+        log.debug("repo cache: disabled by settings (use_repo_cache=false)")
+        return None
+    if settings.repo_data_dir is not None:
+        data_dir = Path(settings.repo_data_dir)
+    else:
+        try:
+            data_dir = resolve_wordsman_root(settings) / "data"
+        except PipelineError as exc:
+            log.debug("repo cache: no wordsman root ({}) — live fetch", exc)
+            return None
+    if not data_dir.is_dir():
+        log.warning(
+            "repo cache: {} is absent (LFS not pulled?) — falling back to live fetch", data_dir
+        )
+        return None
+    log.debug("repo cache: using {}", data_dir)
+    return data_dir
+
+
+def _is_lfs_pointer(path: Path) -> bool:
+    """True when the file is an unfetched Git-LFS pointer rather than real content."""
+    try:
+        with path.open("rb") as handle:
+            return handle.read(42).startswith(b"version https://git-lfs")
+    except OSError:
+        return False
+
+
+def cached_srt(settings: Settings, slug: str) -> Path | None:
+    """An already-fetched subtitle at data/in/<slug>/*.srt, or None."""
+    data_dir = resolve_repo_data_dir(settings)
+    if data_dir is None:
+        return None
+    candidate_dir = data_dir / "in" / slug
+    log.debug("repo cache: probing {} for a cached .srt", candidate_dir)
+    if not candidate_dir.is_dir():
+        log.debug("repo cache: MISS — no {}", candidate_dir)
+        return None
+    for srt in sorted(candidate_dir.glob("*.srt")):
+        if _is_lfs_pointer(srt):
+            log.warning("repo cache: {} is an unfetched LFS pointer — skipping", srt.name)
+            continue
+        if srt.stat().st_size == 0:
+            log.warning("repo cache: {} is empty — skipping", srt.name)
+            continue
+        log.info("repo cache HIT: reusing subtitle {} (skipping network fetch)", srt.name)
+        return srt
+    log.debug("repo cache: MISS — no usable .srt in {}", candidate_dir)
+    return None
+
+
+def cached_wordlists(settings: Settings, slug: str) -> Path | None:
+    """An already-built wordlist dir at data/out/<slug>, or None.
+
+    Only safe when the user takes the global defaults — per-user prefs (level, top,
+    formats) would otherwise be silently ignored, since these files were built with the
+    repo's own settings. The caller decides; this only reports what exists.
+    """
+    data_dir = resolve_repo_data_dir(settings)
+    if data_dir is None:
+        return None
+    candidate_dir = data_dir / "out" / slug
+    log.debug("repo cache: probing {} for prebuilt wordlists", candidate_dir)
+    if not candidate_dir.is_dir():
+        log.debug("repo cache: MISS — no {}", candidate_dir)
+        return None
+    files = [p for p in candidate_dir.iterdir() if p.is_file() and not _is_lfs_pointer(p)]
+    if not files:
+        log.debug("repo cache: MISS — {} holds no usable files", candidate_dir)
+        return None
+    log.info("repo cache HIT: {} prebuilt wordlist files in {}", len(files), candidate_dir)
+    return candidate_dir
+
+
+def uses_default_generation(settings: Settings, defaults: Settings) -> bool:
+    """True when generation knobs are untouched, so prebuilt wordlists are equivalent."""
+    same = (
+        settings.min_level == defaults.min_level
+        and settings.top == defaults.top
+        and list(settings.formats_exclude) == list(defaults.formats_exclude)
+    )
+    if not same:
+        log.debug("repo cache: user prefs differ from defaults — regenerating wordlists")
+    return same
+
+
 async def fetch_srt(title: str, year: int | None, settings: Settings, out_dir: Path) -> Path:
     """Fetch the best SRT via the parent repo's fetch_srt.sh (prints the path last)."""
     root = resolve_wordsman_root(settings)
@@ -208,10 +301,13 @@ async def fetch_srt(title: str, year: int | None, settings: Settings, out_dir: P
     if year:
         cmd += ["--year", str(year)]
     # Pin the provider list explicitly: srt-search's own default is podnapisi-only, whose
-    # host is DNS-dead (wordsman#22), so relying on it makes every fetch fail. yify first.
+    # host is DNS-dead (wordsman#22), so relying on it makes every fetch fail.
     providers = ",".join(p.strip() for p in settings.srt_providers if p.strip())
     if providers:
         cmd += ["--providers", providers]
+    log.info(
+        "live fetch: '{}'{} via providers [{}]", title, f" ({year})" if year else "", providers
+    )
     code, stdout, stderr = await _run(cmd, timeout=settings.fetch_timeout, cwd=root)
     if code != 0:
         log.warning("fetch_srt failed ({}): {}", code, stderr[-500:])
@@ -285,12 +381,33 @@ def _work_dir(settings: Settings, slug: str, scope: str | None = None) -> Path:
 
 
 async def movie_to_wordlists(
-    title: str, year: int | None, settings: Settings, *, scope: str | None = None
+    title: str,
+    year: int | None,
+    settings: Settings,
+    *,
+    scope: str | None = None,
+    defaults: Settings | None = None,
 ) -> Path:
-    """Full movie flow: fetch SRT → wordlists → single ZIP; returns the ZIP path."""
+    """Full movie flow: (cache | fetch) SRT → wordlists → single ZIP; returns the ZIP path.
+
+    Prefers the wordsman repo's own cache — an already-fetched `data/in/<slug>` subtitle,
+    and, when the caller's generation knobs are untouched, the prebuilt `data/out/<slug>`
+    wordlists — falling back to a live fetch/generation whenever the cache cannot serve.
+    """
     slug = slugify(f"{title}-{year}" if year else title)
+    log.debug("movie flow: title={!r} year={} slug={} scope={}", title, year, slug, scope)
     work = _work_dir(settings, slug, scope)
-    srt = await fetch_srt(title, year, settings, work / "srt")
+
+    # Fully prebuilt wordlists are only equivalent when generation knobs are default.
+    prebuilt = cached_wordlists(settings, slug)
+    if prebuilt is not None and uses_default_generation(settings, defaults or Settings()):
+        log.info("movie '{}' → serving {} from the repo cache (no generation)", title, prebuilt)
+        return zip_dir(prebuilt, work / f"{slug}-wordlists.zip")
+
+    srt = cached_srt(settings, slug)
+    if srt is None:
+        log.debug("no cached subtitle for {} — going to the network", slug)
+        srt = await fetch_srt(title, year, settings, work / "srt")
     files = await build_wordlists(srt, work / "out", settings, source_title=title)
     log.info("movie '{}' → {} wordlist files", title, len(files))
     return zip_dir(work / "out", work / f"{slug}-wordlists.zip")

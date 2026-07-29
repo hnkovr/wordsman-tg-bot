@@ -47,7 +47,11 @@ def create_app() -> FastAPI:
     ) -> FileResponse:
         eff, scope = _apply_user(settings, get_store(settings), req.user_id)
         try:
-            zip_path = await pipeline.movie_to_wordlists(req.title, req.year, eff, scope=scope)
+            # `defaults` lets the pipeline tell "user took the defaults" (prebuilt repo
+            # wordlists are then equivalent) from "user customised" (must regenerate).
+            zip_path = await pipeline.movie_to_wordlists(
+                req.title, req.year, eff, scope=scope, defaults=settings
+            )
         except SubtitlesNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except PipelineError as exc:

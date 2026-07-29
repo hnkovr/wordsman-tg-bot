@@ -45,14 +45,24 @@ class Settings(BaseSettings):
     service_thread_id: int | None = None
     service_notify: bool = True
 
-    # Subtitle providers forwarded to fetch_srt.sh, in priority order. yify is keyless and
-    # healthy; podnapisi is a DNS-dead fallback (wordsman#22). Override via TG_BOT_SRT_PROVIDERS.
-    srt_providers: Annotated[list[str], NoDecode] = ["yify", "podnapisi"]
+    # Subtitle providers forwarded to fetch_srt.sh, in priority order — the same set the
+    # CLI/skill flow uses (subproducts/english-apps/apps_pipeline.yml search.providers):
+    # gestdown covers TV episodes, yify + subtitlecat cover films. podnapisi is omitted on
+    # purpose: its host is DNS-dead (wordsman#22). Override via TG_BOT_SRT_PROVIDERS.
+    srt_providers: Annotated[list[str], NoDecode] = ["gestdown", "yify", "subtitlecat"]
 
     # Pipeline: parent wordsman checkout providing main.py + scripts/fetch_srt.sh.
     # None → auto-detected (submodule layout: <wordsman>/subproducts/tg-bot).
     wordsman_root: Path | None = None
     work_dir: Path = Path("work")
+
+    # Repo cache: reuse the wordsman checkout's already-fetched subtitles (data/in/<slug>)
+    # and already-built wordlists (data/out/<slug>) instead of re-fetching/re-generating.
+    # Only usable where that data is actually on disk — the blobs live in Git-LFS, so a
+    # deploy host without the LFS objects pulled must fall back to a live fetch. None →
+    # auto-detect (<wordsman_root>/data). Set use_repo_cache=false to force live fetches.
+    use_repo_cache: bool = True
+    repo_data_dir: Path | None = None
     # Per-user preferences DB (multi-user mode); shared by the bot and the API.
     db_path: Path = Path("data/tg_bot.sqlite3")
 

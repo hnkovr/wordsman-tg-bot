@@ -29,3 +29,10 @@ max_document_mb: 20.0
 
 # Per-user preferences DB (multi-user mode); shared by the bot and the API.
 db_path: data/tg_bot.sqlite3
+
+# Repo cache: reuse the wordsman checkout's data/in/<slug> subtitles and data/out/<slug>
+# wordlists instead of re-fetching / re-generating. Those blobs live in Git-LFS, so on a
+# deploy host without the LFS objects pulled this degrades to a live fetch automatically.
+# repo_data_dir empty → auto-detect <wordsman_root>/data.
+use_repo_cache: true
+repo_data_dir:

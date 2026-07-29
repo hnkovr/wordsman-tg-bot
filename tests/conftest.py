@@ -83,10 +83,22 @@ def settings(fake_wordsman_root: Path, tmp_path: Path) -> Settings:
         wordsman_root=fake_wordsman_root,
         work_dir=tmp_path / "work",
         db_path=tmp_path / "prefs.sqlite3",
+        # Default the repo cache OFF so existing tests exercise the live-fetch path;
+        # cache tests opt in explicitly via the `cache_settings` fixture.
+        use_repo_cache=False,
         except_list=None,
         fetch_timeout=30.0,
         dict_timeout=30.0,
     )
+
+
+@pytest.fixture
+def cache_settings(settings: Settings, tmp_path: Path) -> Settings:
+    """Settings with the repo cache enabled against an empty fake data/ dir."""
+    data_dir = tmp_path / "repo-data"
+    (data_dir / "in").mkdir(parents=True)
+    (data_dir / "out").mkdir(parents=True)
+    return settings.model_copy(update={"use_repo_cache": True, "repo_data_dir": data_dir})
 
 
 @pytest.fixture
