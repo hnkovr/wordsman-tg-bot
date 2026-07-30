@@ -34,6 +34,29 @@ fetch. Knobs: `TG_BOT_USE_REPO_CACHE` (default true), `TG_BOT_REPO_DATA_DIR` (de
 `<wordsman_root>/data`). Set `TG_BOT_LOG_LEVEL=DEBUG` to see every probe and decision —
 DEBUG per path probed, INFO on hits and the chosen path, WARNING on degrades.
 
+## Proving the chain end-to-end (integration tests)
+
+`tests/test_integration_odyssey.py` runs the whole chain against the **real** wordsman
+checkout for *"The Odyssey" (2026)* — the query that first exposed all of the above. It is
+deselected from the default run (`-m "not integration"` in `pyproject.toml`) because it
+needs the LFS blobs and, in one lane, the network:
+
+```bash
+just test-integration          # repo cache + real subtitle-dict, offline
+just test-integration-network  # + a live provider fetch
+```
+
+| Lane | Asserts | Reproduces |
+| --- | --- | --- |
+| query mapping | `odyssey 2026` → `("odyssey", 2026)` → slug `odyssey-2026` | the slug both data dirs use |
+| subtitle cache | the cached SRT is real content, and non-default prefs regenerate from it | `data/in/odyssey-2026/**` |
+| wordlist cache | the ZIP is byte-identical to the prebuilt tree | `data/out/odyssey-2026/**` |
+| live fetch | providers still serve the title with the cache off | a fresh `data/in`-shaped SRT |
+
+A skip rather than a failure means the fixtures could not find their inputs — the skip
+message names the missing path and tells you to `git lfs pull` in the wordsman checkout.
+Set `TG_BOT_WORDSMAN_ROOT` when running from a standalone clone with no sibling parent.
+
 ## The provider trap (most common)
 
 srt-search's **own default provider list is `podnapisi` only** (`config.py:31`), and its
