@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     service_chat_id: int | None = None
     service_thread_id: int | None = None
     service_notify: bool = True
+    # Confine group traffic to `service_thread_id` alone. Without it the bot answers in
+    # every topic of the service chat (General included), which is never wanted in a
+    # shared pet-project chat. Private chats are unaffected — end users still DM the bot.
+    service_topic_only: bool = True
 
     # Subtitle providers forwarded to fetch_srt.sh, in priority order — the same set the
     # CLI/skill flow uses (subproducts/english-apps/apps_pipeline.yml search.providers):

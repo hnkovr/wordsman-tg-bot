@@ -34,6 +34,36 @@ fetch. Knobs: `TG_BOT_USE_REPO_CACHE` (default true), `TG_BOT_REPO_DATA_DIR` (de
 `<wordsman_root>/data`). Set `TG_BOT_LOG_LEVEL=DEBUG` to see every probe and decision —
 DEBUG per path probed, INFO on hits and the chosen path, WARNING on degrades.
 
+## Chat scope: one topic, and being able to read it
+
+Two independent things, and confusing them costs an evening:
+
+| Concern | Decided by | Symptom when wrong |
+| --- | --- | --- |
+| **Where the bot answers** | this repo (`scope.py`) | bot replies in every topic of the group |
+| **Whether it receives group messages at all** | BotFather privacy mode | bot is silent in the topic; DMs work fine |
+
+**Scope** is `TG_BOT_SERVICE_CHAT_ID` + `TG_BOT_SERVICE_THREAD_ID` with
+`TG_BOT_SERVICE_TOPIC_ONLY=true` (the default). `ScopeMiddleware` is an *outer* middleware,
+so an out-of-scope update is dropped before any handler, filter or service-chat
+notification runs. Private chats always pass — end users still DM the bot. The General
+topic never matches a configured thread, which is the intent: one topic, not the group.
+Replies need no work: aiogram ≥3 fills `message_thread_id` from the incoming message.
+
+**Reading** is a Telegram-side setting this repo cannot change. With privacy mode ON (the
+BotFather default) the bot receives only commands, replies to itself and @mentions — plain
+text in the topic never arrives, and nothing errors. `getMe().can_read_all_group_messages`
+reports it, so `make doctor` layer 5 says so outright:
+
+```
+5. chat scope
+  ✓ scoped to chat -100… topic 800 (plus private chats)
+  ✗ privacy mode ON — Telegram delivers only commands/replies/@mentions from the group
+      fix: BotFather → /setprivacy → this bot → Disable, then re-add it to the group
+```
+
+The re-add matters: the privacy change does not apply to groups the bot is already in.
+
 ## Proving the chain end-to-end (integration tests)
 
 `tests/test_integration_odyssey.py` runs the whole chain against the **real** wordsman

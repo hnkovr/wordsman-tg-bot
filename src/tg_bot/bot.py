@@ -20,11 +20,12 @@ from aiogram.types import (
     Message,
 )
 
-from tg_bot import artifacts, menu, pipeline
+from tg_bot import artifacts, menu, pipeline, scope
 from tg_bot.config import Settings, get_settings
 from tg_bot.logger import log
 from tg_bot.menu import Row
 from tg_bot.notify import ServiceNotifier, describe_user
+from tg_bot.scope import ScopeMiddleware
 from tg_bot.store import get_store
 
 router = Router()
@@ -284,12 +285,28 @@ async def run_bot() -> None:  # pragma: no cover - real Telegram polling loop
         raise SystemExit("TELEGRAM_BOT_TOKEN is not set")
     bot = Bot(token=settings.telegram_bot_token)
     dp = Dispatcher()
+    # Outer middleware: out-of-scope updates are dropped before any handler, filter or
+    # service-chat notification runs. Registered on both update types the bot handles.
+    guard = ScopeMiddleware(settings)
+    dp.message.outer_middleware(guard)
+    dp.callback_query.outer_middleware(guard)
     dp.include_router(router)
     me = await bot.get_me()
     await bot.set_my_commands(BOT_COMMANDS)
     notifier = ServiceNotifier(bot, settings)
-    await notifier.send(f"🟢 wordsman bot @{me.username} started (api={settings.api_url})")
-    log.info("starting Telegram polling as @{}; api_url={}", me.username, settings.api_url)
+    where = scope.describe_scope(settings)
+    await notifier.send(f"🟢 wordsman bot @{me.username} started (api={settings.api_url})\n{where}")
+    log.info(
+        "starting Telegram polling as @{}; api_url={}; scope: {}",
+        me.username,
+        settings.api_url,
+        where,
+    )
+    # Being scoped to a topic the bot cannot read is a silent failure, so say it loudly.
+    hint = scope.reading_hint(me.can_read_all_group_messages, settings)
+    if hint:
+        log.warning("cannot read group messages: {}", hint)
+        await notifier.send(f"⚠️ {hint}")
     try:
         await dp.start_polling(bot)
     finally:

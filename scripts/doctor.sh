@@ -59,13 +59,22 @@ else
   bad "TELEGRAM_BOT_TOKEN missing (config/.env, .env, or env) — bot cannot start"
 fi
 
-providers=""
+providers="${TG_BOT_SRT_PROVIDERS:-}"
 for env_file in config/.env .env; do
   [ -z "$providers" ] && [ -f "$env_file" ] &&
     providers="$(sed -n 's/^TG_BOT_SRT_PROVIDERS=//p' "$env_file" | tail -1)"
 done
-[ -z "$providers" ] && providers="yify,podnapisi" # config.yml default
-pass "srt providers: $providers"
+# Fall back to config.yml — the real source of the default. Hardcoding a guess here made
+# the doctor report `yify,podnapisi` while config.yml already said something else.
+if [ -z "$providers" ] && [ -f config/config.yml ]; then
+  providers="$(sed -n '/^srt_providers:/,/^[^[:space:]-]/p' config/config.yml |
+    sed -n 's/^[[:space:]]*-[[:space:]]*//p' | paste -sd, -)"
+fi
+if [ -n "$providers" ]; then
+  pass "srt providers: $providers"
+else
+  bad "no provider list resolved from env or config/config.yml"
+fi
 
 # --- Layer 2: wordsman root ----------------------------------------------------
 echo "2. wordsman root"
@@ -83,7 +92,12 @@ fi
 # --- Layer 3: subtitle providers (DNS + live search) ---------------------------
 echo "3. subtitle providers"
 first_provider="${providers%%,*}"
-declare -A HOSTS=([yify]=yifysubtitles.ch [podnapisi]=www.podnapisi.net [gestdown]=api.gestdown.info)
+declare -A HOSTS=(
+  [yify]=yifysubtitles.ch
+  [podnapisi]=www.podnapisi.net
+  [gestdown]=api.gestdown.info
+  [subtitlecat]=www.subtitlecat.com
+)
 IFS=',' read -ra plist <<<"$providers"
 reachable=""
 for p in "${plist[@]}"; do
@@ -115,9 +129,50 @@ else
   warn "not serving at $api_url (start with 'make tg-bot-serve' — not required for this check)"
 fi
 
-# --- Layer 5: end-to-end sample (opt-in, slow) ---------------------------------
+# --- Layer 5: chat scope & group-read permission -------------------------------
+# Being scoped to a topic the bot cannot read is a silent failure: the bot looks healthy,
+# answers DMs fine, and never reacts in the topic. getMe reports the privacy setting.
+echo "5. chat scope"
+read_cfg() {
+  local key="$1" value=""
+  value="$(printenv "TG_BOT_${key^^}" 2>/dev/null || true)"
+  for env_file in config/.env .env; do
+    [ -z "$value" ] && [ -f "$env_file" ] &&
+      value="$(sed -n "s/^TG_BOT_${key^^}=//p" "$env_file" | tail -1)"
+  done
+  [ -z "$value" ] && [ -f config/config.yml ] &&
+    value="$(sed -n "s/^${key}:[[:space:]]*//p" config/config.yml | tail -1)"
+  printf '%s' "$value"
+}
+
+chat_id="$(read_cfg service_chat_id)"
+thread_id="$(read_cfg service_thread_id)"
+topic_only="$(read_cfg service_topic_only)"
+[ -z "$topic_only" ] && topic_only=true
+
+if [ -z "$chat_id" ]; then
+  warn "no service chat configured — the bot answers private chats only"
+elif [ -n "$thread_id" ] && [ "$topic_only" != false ]; then
+  pass "scoped to chat $chat_id topic $thread_id (plus private chats)"
+else
+  warn "scoped to ALL topics of chat $chat_id — set TG_BOT_SERVICE_THREAD_ID + topic_only"
+fi
+
+if [ -n "$token" ] && [ -n "$chat_id" ]; then
+  me="$(curl -fsS --max-time 8 "https://api.telegram.org/bot${token}/getMe" 2>/dev/null || true)"
+  if [ -z "$me" ]; then
+    warn "getMe failed (network or bad token) — cannot verify group-read permission"
+  elif printf '%s' "$me" | grep -q '"can_read_all_group_messages":true'; then
+    pass "privacy mode OFF — the bot receives plain messages in the topic"
+  else
+    bad "privacy mode ON — Telegram delivers only commands/replies/@mentions from the group"
+    echo "      fix: BotFather → /setprivacy → this bot → Disable, then re-add it to the group"
+  fi
+fi
+
+# --- Layer 6: end-to-end sample (opt-in, slow) ---------------------------------
 if [ "$e2e" = 1 ]; then
-  echo "5. end-to-end (Inception via $providers)"
+  echo "6. end-to-end (Inception via $providers)"
   if srt="$(bash "$root/scripts/fetch_srt.sh" --movie Inception --providers "$providers" 2>/dev/null | tail -1)" &&
     [ -f "$srt" ]; then
     pass "fetched $(basename "$srt")"
