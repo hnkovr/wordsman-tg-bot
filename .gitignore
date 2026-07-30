@@ -11,6 +11,6 @@ downloads/
 dist/
 .DS_Store
 
-# --- tmp-dir:begin (auto-upsert via .tmp/upsert_tg_bot.py) ---
+# --- tmp-dir:begin (auto-upsert via scripts/upsert_docs.py) ---
 .tmp/
 # --- tmp-dir:end ---

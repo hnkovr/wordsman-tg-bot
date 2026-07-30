@@ -10,7 +10,7 @@
 - Mirror `wordsman-srt-api` conventions: pydantic-settings, loguru, click CLI,
   FastAPI `create_app()`, hatchling `src/` layout, pytest coverage ≥ 85%.
 
-<!-- tg-bot-service-chat:begin (auto-upsert via .tmp/upsert_tg_bot.py) -->
+<!-- tg-bot-service-chat:begin (auto-upsert via scripts/upsert_docs.py) -->
 
 ## Service chat & secrets
 
