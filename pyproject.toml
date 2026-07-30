@@ -38,8 +38,14 @@ packages = ["src/tg_bot"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-q --cov=tg_bot --cov-report=term-missing --cov-fail-under=85"
+# Integration tests drive the real wordsman checkout (and optionally the live subtitle
+# providers), so the default run excludes them; `-m integration` on the CLI overrides this.
+addopts = "-q -m 'not integration' --cov=tg_bot --cov-report=term-missing --cov-fail-under=85"
 asyncio_mode = "auto"
+markers = [
+  "integration: needs a real wordsman checkout with its Git-LFS data/ pulled (just test-integration)",
+  "network: additionally hits the live subtitle providers (just test-integration-network)",
+]
 
 [tool.ruff]
 line-length = 100

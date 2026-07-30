@@ -18,6 +18,14 @@ open-bot:
 doctor *args:
     bash scripts/doctor.sh {{ args }}
 
+# Integration tests against the real wordsman checkout (repo-cache lane, no network)
+test-integration *args:
+    uv run pytest -m "integration and not network" --no-cov {{ args }}
+
+# Same, plus the lanes that hit the live subtitle providers (slow, needs network)
+test-integration-network *args:
+    uv run pytest -m integration --no-cov {{ args }}
+
 # Smoke-test the API against a running server (default port 8340)
 smoke port="8340":
     curl -fsS "http://localhost:{{ port }}/healthz"

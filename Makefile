@@ -1,4 +1,4 @@
-.PHONY: install test lint format serve bot run-all all tg-bot-all doctor check
+.PHONY: install test test-integration lint format serve bot run-all all tg-bot-all doctor check
 
 install:
 	uv sync --group dev
@@ -13,6 +13,9 @@ doctor: ## Health-chain check: names the first broken link (config→root→prov
 
 test:
 	uv run pytest
+
+test-integration: ## Real wordsman checkout + repo cache, no network (needs `git lfs pull` there)
+	just test-integration
 
 lint:
 	uv run ruff check .
