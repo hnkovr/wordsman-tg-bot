@@ -18,8 +18,10 @@ from pathlib import Path
 from tg_bot.config import REPO_ROOT, Settings, get_settings
 
 FMT_SEP = ","
-#: Preference fields a user may override (each maps to a Settings field of the same name).
-EDITABLE = ("min_level", "top", "formats_exclude")
+#: Preference fields a user may override. All but `language` map to a Settings field of
+#: the same name; `language` routes the plain-text flow (None/"en" → EN wordlists,
+#: "ru" → RU subtitle/audio search) and never feeds generation.
+EDITABLE = ("min_level", "top", "formats_exclude", "language")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS user_prefs (
@@ -28,6 +30,7 @@ CREATE TABLE IF NOT EXISTS user_prefs (
     min_level       TEXT,
     top             INTEGER,
     formats_exclude TEXT,
+    language        TEXT,
     updated_at      REAL NOT NULL
 );
 """
@@ -42,6 +45,7 @@ class Prefs:
     min_level: str | None = None
     top: int | None = None
     formats_exclude: list[str] | None = None
+    language: str | None = None
     updated_at: float | None = None
 
 
@@ -58,6 +62,11 @@ class PrefStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as conn, conn:
             conn.executescript(_SCHEMA)
+            # A live DB may predate later columns — CREATE TABLE IF NOT EXISTS
+            # won't add them, so migrate in place.
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(user_prefs)")}
+            if "language" not in cols:
+                conn.execute("ALTER TABLE user_prefs ADD COLUMN language TEXT")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=10)
@@ -76,6 +85,7 @@ class PrefStore:
             min_level=row["min_level"] or None,
             top=row["top"],
             formats_exclude=raw.split(FMT_SEP) if raw else None,
+            language=row["language"] or None,
             updated_at=row["updated_at"],
         )
 
@@ -92,14 +102,16 @@ class PrefStore:
             conn.execute(
                 """
                 INSERT INTO user_prefs
-                    (user_id, username, min_level, top, formats_exclude, updated_at)
+                    (user_id, username, min_level, top, formats_exclude, language, updated_at)
                 VALUES
-                    (:user_id, :username, :min_level, :top, :formats_exclude, :updated_at)
+                    (:user_id, :username, :min_level, :top, :formats_exclude, :language,
+                     :updated_at)
                 ON CONFLICT(user_id) DO UPDATE SET
                     username = excluded.username,
                     min_level = excluded.min_level,
                     top = excluded.top,
                     formats_exclude = excluded.formats_exclude,
+                    language = excluded.language,
                     updated_at = excluded.updated_at
                 """,
                 {
@@ -108,6 +120,7 @@ class PrefStore:
                     "min_level": merged["min_level"] or None,
                     "top": merged["top"],
                     "formats_exclude": FMT_SEP.join(raw) if raw else None,
+                    "language": merged["language"] or None,
                     "updated_at": time.time(),
                 },
             )

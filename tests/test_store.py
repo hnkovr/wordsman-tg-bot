@@ -50,6 +50,18 @@ class TestPrefStore:
         store.set(42, min_level=None)
         assert store.get(42).min_level is None
 
+    def test_language_roundtrip_and_inherit(self, store: PrefStore) -> None:
+        assert store.get(42).language is None
+        store.set(42, language="ru")
+        assert store.get(42).language == "ru"
+        store.set(42, language=None)
+        assert store.get(42).language is None
+
+    def test_language_survives_other_updates(self, store: PrefStore) -> None:
+        store.set(42, language="ru")
+        store.set(42, top=100)
+        assert store.get(42).language == "ru"
+
 
 class TestEffectiveSettings:
     def test_no_prefs_returns_same_object(self, settings: Settings, store: PrefStore) -> None:
@@ -66,3 +78,30 @@ def test_get_store_is_cached_per_path(settings: Settings) -> None:
     from tg_bot.store import get_store
 
     assert get_store(settings) is get_store(settings)
+
+
+def test_migration_adds_language_column_to_live_db(tmp_path) -> None:
+    """A DB created before the language column must be migrated in place, data intact."""
+    import sqlite3
+
+    db = tmp_path / "old.sqlite3"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE user_prefs (
+                user_id         INTEGER PRIMARY KEY,
+                username        TEXT,
+                min_level       TEXT,
+                top             INTEGER,
+                formats_exclude TEXT,
+                updated_at      REAL NOT NULL
+            );
+            INSERT INTO user_prefs VALUES (42, 'hnkovr', 'B1', 100, NULL, 1.0);
+            """
+        )
+    store = PrefStore(db)
+    prefs = store.get(42)
+    assert prefs.min_level == "B1" and prefs.top == 100  # old row intact
+    assert prefs.language is None
+    store.set(42, language="ru")
+    assert store.get(42).language == "ru"
