@@ -34,7 +34,11 @@ class FakeMessage:
     markups: list[Any] = field(default_factory=list)
 
     async def answer(
-        self, text: str, reply_markup: Any = None, parse_mode: str | None = None
+        self,
+        text: str,
+        reply_markup: Any = None,
+        parse_mode: str | None = None,
+        link_preview_options: Any = None,
     ) -> None:
         self.answers.append(text)
         if reply_markup is not None:
@@ -294,6 +298,115 @@ class TestFilesMenu:
         await botmod.on_menu_callback(Cb())  # no zip on disk → index error path
         assert alerts and alerts[0][1] is True
         assert "no longer available" in alerts[0][0].lower()
+
+
+def test_bot_commands_are_telegram_legal() -> None:
+    """Telegram allows only [a-z0-9_] in commands — hyphens would be rejected."""
+    import re
+
+    commands = [c.command for c in botmod.BOT_COMMANDS]
+    assert {"ru", "ru_subs", "ru_audio"} <= set(commands)
+    assert all(re.fullmatch(r"[a-z0-9_]{1,32}", c) for c in commands)
+
+
+class TestRuSearch:
+    @pytest.fixture
+    def ru_ready(
+        self, fixed_settings: Settings, monkeypatch: pytest.MonkeyPatch
+    ) -> Settings:
+        from tg_bot import rusearch
+
+        async def fake_local(settings: Settings, kind: str) -> list[dict]:
+            if kind == "subs":
+                return [{"path": "x.ru.srt", "kind": "file", "confidence": 0.9}]
+            return []
+
+        async def fake_subs(title: str, year: int | None, settings: Settings):
+            return rusearch.LegResult(
+                items=[{"provider": "subtitlecat", "title": title, "year": year}]
+            )
+
+        async def fake_audio(title: str, year: int | None, settings: Settings):
+            return rusearch.LegResult(reason="audio-search недоступен в этом деплое")
+
+        monkeypatch.setattr(rusearch, "local_scan", fake_local)
+        monkeypatch.setattr(rusearch, "online_subs", fake_subs)
+        monkeypatch.setattr(rusearch, "online_audio", fake_audio)
+        monkeypatch.setattr(
+            rusearch,
+            "load_sources",
+            lambda settings, kind: [
+                rusearch.SourceLink(
+                    name="rutracker",
+                    url="https://rutracker.org",
+                    access="torrent",
+                    search_url="https://rutracker.org/forum/tracker.php?nm={query}",
+                )
+            ],
+        )
+        return fixed_settings
+
+    @staticmethod
+    def _command(args: str | None) -> Any:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(args=args)
+
+    async def test_ru_command_full_report(self, ru_ready: Settings) -> None:
+        message = FakeMessage(text="/ru Dune 2021")
+        await botmod.on_ru(message, self._command("Dune 2021"))
+        report = message.answers[-1]
+        assert "Dune (2021)" in report
+        for marker in ("📀", "🌐", "🔊", "🔗"):
+            assert marker in report
+        assert "rutracker.org/forum/tracker.php?nm=Dune+2021" in report
+        assert "Торренты: только ссылки" in report
+
+    async def test_ru_bare_shows_usage(self, ru_ready: Settings) -> None:
+        message = FakeMessage(text="/ru")
+        await botmod.on_ru(message, self._command(None))
+        assert "Usage: /ru" in message.answers[-1]
+
+    async def test_ru_subs_mode_has_no_audio_section(self, ru_ready: Settings) -> None:
+        message = FakeMessage(text="/ru_subs Dune")
+        await botmod.on_ru_subs(message, self._command("Dune"))
+        report = message.answers[-1]
+        assert "🌐" in report and "🔊" not in report
+
+    async def test_ru_audio_mode_has_no_subs_section(self, ru_ready: Settings) -> None:
+        message = FakeMessage(text="/ru_audio Dune")
+        await botmod.on_ru_audio(message, self._command("Dune"))
+        report = message.answers[-1]
+        assert "🔊" in report and "🌐" not in report
+
+    async def test_ru_pref_routes_plain_text_away_from_en_flow(
+        self, ru_ready: Settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tg_bot.store import get_store
+
+        async def explode(*args: Any, **kwargs: Any) -> None:
+            raise AssertionError("EN wordlist flow must not run for a RU-pref user")
+
+        monkeypatch.setattr(botmod, "_post_movie", explode)
+        get_store(ru_ready).set(7, language="ru")
+        message = FakeMessage(text="Dune 2021")
+        await botmod.on_text(message)
+        assert "поиск RU" in message.answers[-1]
+
+    async def test_one_failed_leg_keeps_other_sections(
+        self, ru_ready: Settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tg_bot import rusearch
+
+        async def boom(title: str, year: int | None, settings: Settings):
+            raise RuntimeError("leg died")
+
+        monkeypatch.setattr(rusearch, "online_subs", boom)
+        message = FakeMessage(text="/ru Dune")
+        await botmod.on_ru(message, self._command("Dune"))
+        report = message.answers[-1]
+        assert "RuntimeError: leg died" in report  # failed leg surfaced as its section
+        assert "📀" in report and "🔊" in report  # other sections still rendered
 
 
 class TestTruncate:
