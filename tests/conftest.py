@@ -63,6 +63,40 @@ FAKE_MAIN = textwrap.dedent(
 )
 
 
+FAKE_SEARCH_MAIN = textwrap.dedent(
+    """\
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("cmd")
+    parser.add_argument("path")
+    parser.add_argument("--json", action="store_true", dest="as_json")
+    args, _rest = parser.parse_known_args()
+
+    if args.cmd == "search-subs":
+        hits = [{"path": "dune-2021/Dune.ru.srt", "kind": "file", "lang": "ru",
+                 "confidence": 0.97, "reasons": ["content", "filename"],
+                 "stream_index": None, "codec": None, "title": None}]
+    else:
+        hits = [{"path": "Dune.2021.mkv", "kind": "embedded", "lang": "ru",
+                 "confidence": 1.0, "reasons": ["stream_tag"], "stream_index": 2,
+                 "codec": "ac3", "channels": 6, "title": None, "default": True}]
+    print(json.dumps(hits))
+    """
+)
+
+
+@pytest.fixture
+def fake_search_root(tmp_path: Path) -> Path:
+    """A checkout shaped like the wordsman.search module home (main.py + package dir)."""
+    root = tmp_path / "wordsman-search"
+    (root / "wordsman" / "search").mkdir(parents=True)
+    (root / "wordsman" / "search" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "main.py").write_text(FAKE_SEARCH_MAIN, encoding="utf-8")
+    return root
+
+
 @pytest.fixture
 def fake_wordsman_root(tmp_path: Path) -> Path:
     root = tmp_path / "wordsman"
@@ -89,6 +123,20 @@ def settings(fake_wordsman_root: Path, tmp_path: Path) -> Settings:
         except_list=None,
         fetch_timeout=30.0,
         dict_timeout=30.0,
+    )
+
+
+@pytest.fixture
+def ru_settings(settings: Settings, fake_search_root: Path, tmp_path: Path) -> Settings:
+    """Settings with the RU local-scan leg wired to the fake search checkout."""
+    scan_dir = tmp_path / "media"
+    scan_dir.mkdir(exist_ok=True)
+    return settings.model_copy(
+        update={
+            "search_wordsman_root": fake_search_root,
+            "ru_scan_dirs": [str(scan_dir)],
+            "ru_search_timeout": 30.0,
+        }
     )
 
 

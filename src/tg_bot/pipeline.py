@@ -8,6 +8,7 @@ extracts plain text from PDF/HTML uploads, and zips the results.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import shutil
 import sys
@@ -184,11 +185,14 @@ def stderr_reason(stderr: str, code: int) -> str:
     return meaningful[-1] if meaningful else f"exit code {code}"
 
 
-async def _run(cmd: list[str], *, timeout: float, cwd: Path) -> tuple[int, str, str]:
+async def _run(
+    cmd: list[str], *, timeout: float, cwd: Path, env: dict[str, str] | None = None
+) -> tuple[int, str, str]:
     log.info("run: {}", " ".join(cmd))
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=cwd,
+        env={**os.environ, **env} if env else None,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
