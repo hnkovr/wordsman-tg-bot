@@ -39,3 +39,23 @@ db_path: data/tg_bot.sqlite3
 # repo_data_dir empty → auto-detect <wordsman_root>/data.
 use_repo_cache: true
 repo_data_dir:
+
+# --- RU search (/ru, /ru_subs, /ru_audio) ---
+# A second wordsman checkout providing the stdlib `wordsman.search` module
+# (main.py search-subs/search-audio --json) for the "already on disk" leg. Distinct
+# from wordsman_root, which must contain scripts/fetch_srt.sh and is rejected
+# otherwise. Empty → the local-scan leg is disabled.
+search_wordsman_root: # e.g. ~/gi/@hnkovr/wordsman
+# Directories scanned for on-disk RU subs/audio; empty → <wordsman_root>/data.
+ru_scan_dirs: []
+# Online RU subtitle providers passed to srt-search (subtitlecat is the only
+# ru-capable provider today; srt-search's own default podnapisi is DNS-dead).
+ru_subs_providers:
+  - subtitlecat
+ru_search_timeout: 120.0
+ru_limit: 5 # max items rendered per report section
+# Links-only source catalogs (dual_subtitle_sources / audio_sources); torrent entries
+# are rendered as tracker-search links only — never scraped or downloaded. Empty →
+# auto-derive <wordsman_root>/subproducts/{srt-search,audio-search}/config/config.yml.
+ru_subs_sources_file:
+ru_audio_sources_file:

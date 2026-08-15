@@ -81,7 +81,27 @@ class Settings(BaseSettings):
     dict_timeout: float = 600.0
     max_document_mb: float = 20.0  # Telegram bot API download ceiling
 
-    @field_validator("formats_exclude", "srt_providers", mode="before")
+    # --- RU search (/ru, /ru_subs, /ru_audio) ---
+    # A second wordsman checkout providing the stdlib `wordsman.search` module
+    # (main.py search-subs/search-audio --json) for the "already on disk" leg.
+    # Distinct from wordsman_root, which must contain scripts/fetch_srt.sh and is
+    # rejected otherwise. None → the local-scan leg is disabled.
+    search_wordsman_root: Path | None = None
+    # Directories scanned for on-disk RU subs/audio; empty → <wordsman_root>/data.
+    ru_scan_dirs: Annotated[list[str], NoDecode] = []
+    # Online RU subtitle providers passed to srt-search. subtitlecat is the only
+    # ru-capable provider today; srt-search's own default (podnapisi) is DNS-dead.
+    ru_subs_providers: Annotated[list[str], NoDecode] = ["subtitlecat"]
+    ru_search_timeout: float = 120.0
+    ru_limit: int = 5  # max items rendered per report section
+    # Links-only source catalogs (dual_subtitle_sources / audio_sources). None →
+    # auto-derive <wordsman_root>/subproducts/{srt-search,audio-search}/config/config.yml.
+    ru_subs_sources_file: Path | None = None
+    ru_audio_sources_file: Path | None = None
+
+    @field_validator(
+        "formats_exclude", "srt_providers", "ru_scan_dirs", "ru_subs_providers", mode="before"
+    )
     @classmethod
     def split_csv(cls, value: object) -> object:
         if isinstance(value, str):
