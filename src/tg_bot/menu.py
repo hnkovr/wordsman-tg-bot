@@ -29,6 +29,11 @@ def _level(prefs: Prefs, settings: Settings) -> str:
     return prefs.min_level or settings.min_level or "default"
 
 
+def _language(prefs: Prefs) -> str:
+    """The user's search language; default EN (RU routes plain text to /ru search)."""
+    return prefs.language or "en"
+
+
 def _top(prefs: Prefs, settings: Settings) -> int:
     return prefs.top if prefs.top is not None else settings.top
 
@@ -47,7 +52,8 @@ def settings_text(prefs: Prefs, settings: Settings) -> str:
         "⚙️ *Your settings*\n"
         f"• Level (min CEFR): {_level(prefs, settings)}\n"
         f"• Max words: {_top(prefs, settings)}\n"
-        f"• Formats: {len(enabled)}/{len(pipeline.SUPPORTED_FORMATS)} enabled"
+        f"• Formats: {len(enabled)}/{len(pipeline.SUPPORTED_FORMATS)} enabled\n"
+        f"• Search language: {_language(prefs).upper()}"
     )
 
 
@@ -57,6 +63,7 @@ def root_view(prefs: Prefs, settings: Settings) -> View:
         [(f"🎚 Level: {_level(prefs, settings)}", "m:level")],
         [(f"🔢 Max words: {_top(prefs, settings)}", "m:top")],
         [(f"🗂 Formats: {enabled} enabled", "m:formats")],
+        [(f"🌐 Search language: {_language(prefs).upper()}", "m:lang")],
         [("📤 Send available files", "m:files")],
         [("♻️ Reset to defaults", "s:reset")],
     ]
@@ -116,7 +123,29 @@ def formats_view(prefs: Prefs, settings: Settings) -> View:
     return "Toggle the formats you want in your wordlists:", rows
 
 
-_SUBMENUS = {"level": level_view, "top": top_view, "formats": formats_view, "root": root_view}
+def lang_view(prefs: Prefs, settings: Settings) -> View:
+    current = prefs.language or ""
+    rows: list[Row] = [
+        [(f"{'• ' if current == 'en' else ''}EN — English wordlists", "s:lang:en")],
+        [(f"{'• ' if current == 'ru' else ''}RU — искать RU сабы/аудио", "s:lang:ru")],
+        [("Default (inherit)", "s:lang:_"), ("‹ Back", "m:root")],
+    ]
+    return (
+        "Search language for plain-text messages:\n"
+        "EN — fetch English subtitles and build wordlists (default).\n"
+        "RU — обычные сообщения ищут русские субтитры и аудио-дорожки "
+        "(как /ru) вместо словарей.",
+        rows,
+    )
+
+
+_SUBMENUS = {
+    "level": level_view,
+    "top": top_view,
+    "formats": formats_view,
+    "lang": lang_view,
+    "root": root_view,
+}
 
 
 def handle_callback(
@@ -144,6 +173,11 @@ def handle_callback(
     if kind == "s" and parts[1] == "top":
         store.set(user_id, username=username, top=int(parts[2]))
         return top_view(store.get(user_id), settings)
+
+    if kind == "s" and parts[1] == "lang":
+        value = parts[2]
+        store.set(user_id, username=username, language=None if value == "_" else value)
+        return lang_view(store.get(user_id), settings)
 
     if kind == "t" and parts[1] == "fmt":
         fmt = parts[2]
