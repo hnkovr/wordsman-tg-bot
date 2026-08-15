@@ -45,6 +45,20 @@ bad() {
   fail=1
 }
 
+# Resolve a TG_BOT_* setting the same way pydantic-settings does: env, then env
+# files, then config.yml. Used by several layers below.
+read_cfg() {
+  local key="$1" value=""
+  value="$(printenv "TG_BOT_${key^^}" 2>/dev/null || true)"
+  for env_file in config/.env .env; do
+    [ -z "$value" ] && [ -f "$env_file" ] &&
+      value="$(sed -n "s/^TG_BOT_${key^^}=//p" "$env_file" | tail -1)"
+  done
+  [ -z "$value" ] && [ -f config/config.yml ] &&
+    value="$(sed -n "s/^${key}:[[:space:]]*//p" config/config.yml | tail -1)"
+  printf '%s' "$value"
+}
+
 # --- Layer 1: secrets & config -------------------------------------------------
 echo "1. config"
 token=""
@@ -87,6 +101,33 @@ else
   echo
   echo "doctor: stopping — later checks depend on the wordsman root"
   exit 1
+fi
+
+# --- Layer 2b: RU search (optional — /ru, /ru_subs, /ru_audio) -----------------
+# Non-fatal: the RU legs degrade gracefully in the bot; this only explains which
+# legs will come back empty. Prints resolved values on purpose — get_settings()
+# is lru_cached, so a running bot keeps OLD values until restarted.
+echo "2b. RU search (optional)"
+search_root="$(read_cfg search_wordsman_root)"
+if [ -z "$search_root" ]; then
+  warn "search_wordsman_root unset — the 'already on disk' leg is disabled"
+else
+  search_root_expanded="${search_root/#\~/$HOME}"
+  if [ -f "$search_root_expanded/main.py" ] && [ -d "$search_root_expanded/wordsman/search" ]; then
+    pass "search root: $search_root_expanded (wordsman.search present)"
+  else
+    warn "search_wordsman_root=$search_root lacks main.py or wordsman/search — local scan empty"
+  fi
+fi
+if [ -f "$root/subproducts/srt-search/pyproject.toml" ]; then
+  pass "srt-search subproduct present (online RU subs leg)"
+else
+  warn "no subproducts/srt-search under $root — online RU subs leg disabled"
+fi
+if [ -f "$root/subproducts/audio-search/pyproject.toml" ]; then
+  pass "audio-search subproduct present (online RU audio leg)"
+else
+  warn "no subproducts/audio-search under $root — expected on main checkouts (feat-branch only)"
 fi
 
 # --- Layer 3: subtitle providers (DNS + live search) ---------------------------
@@ -133,18 +174,6 @@ fi
 # Being scoped to a topic the bot cannot read is a silent failure: the bot looks healthy,
 # answers DMs fine, and never reacts in the topic. getMe reports the privacy setting.
 echo "5. chat scope"
-read_cfg() {
-  local key="$1" value=""
-  value="$(printenv "TG_BOT_${key^^}" 2>/dev/null || true)"
-  for env_file in config/.env .env; do
-    [ -z "$value" ] && [ -f "$env_file" ] &&
-      value="$(sed -n "s/^TG_BOT_${key^^}=//p" "$env_file" | tail -1)"
-  done
-  [ -z "$value" ] && [ -f config/config.yml ] &&
-    value="$(sed -n "s/^${key}:[[:space:]]*//p" config/config.yml | tail -1)"
-  printf '%s' "$value"
-}
-
 chat_id="$(read_cfg service_chat_id)"
 thread_id="$(read_cfg service_thread_id)"
 topic_only="$(read_cfg service_topic_only)"

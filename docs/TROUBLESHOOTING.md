@@ -111,3 +111,23 @@ provider tried. Confirm the fix with `just doctor --e2e` (should fetch `Inceptio
 
 The deeper fix — reordering srt-search's default so yify leads — is tracked upstream as
 wordsman#22 and belongs in the `wordsman-srt-search` repo, not here.
+
+## RU search sections come back empty (/ru, /ru_subs, /ru_audio)
+
+Each /ru section degrades independently and says why it is empty — read the report
+first, then `just doctor` (layer "2b. RU search") for the resolved values.
+
+- **📀 «Локально» empty / silent** — `search_wordsman_root` is unset, or points at a
+  checkout without `main.py` + `wordsman/search/` (the fetch_srt.sh checkout is NOT
+  a valid search root; those are different checkouts on purpose). Set
+  `TG_BOT_SEARCH_WORDSMAN_ROOT` and **restart both processes** — `get_settings()`
+  is lru_cached, a running bot keeps old values.
+- **🌐 «провайдер недоступен»** — srt-search failed; the reason is the provider's own
+  error line. The RU-capable provider is `subtitlecat` (`ru_subs_providers`); never
+  rely on srt-search's default (podnapisi, DNS-dead, wordsman#22).
+- **🔊 «audio-search недоступен в этом деплое»** — expected on `main` parent
+  checkouts: audio-search is a feat-branch in-tree subproduct.
+- **🔗 no sources section** — the catalogs could not be read; check
+  `ru_subs_sources_file`/`ru_audio_sources_file` overrides or the auto-derived
+  `<wordsman_root>/subproducts/*/config/config.yml` paths. Torrent entries are
+  links-only by policy: the bot renders search URLs, it never downloads from trackers.

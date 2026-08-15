@@ -51,6 +51,27 @@ Unset preferences inherit the global `config.yml` defaults (the DB stores only e
 overrides). Each user's generation runs in its own `work/<user_id>/` namespace, so
 concurrent requests for the same title don't collide.
 
+## RU search (/ru, /ru_subs, /ru_audio)
+
+Finds **Russian subtitles and audio tracks** for a movie and replies with one report
+of four sections (Telegram commands allow only `a-z0-9_` — hence the underscores):
+
+- **/ru <movie>** — everything; **/ru_subs** — subtitles only; **/ru_audio** — audio only
+- 📀 *already on disk* — a second wordsman checkout's stdlib `wordsman.search` module
+  scans local media (`search_wordsman_root`; unset → leg disabled)
+- 🌐 *online subtitles* — `subproducts/srt-search` with `SRT_SEARCH_LANGUAGE=ru`
+  (providers from `ru_subs_providers`, default `subtitlecat`)
+- 🔊 *online audio* — `subproducts/audio-search` `find --langs ru --json`
+  (feat-branch subproduct; absent → the section explains why)
+- 🔗 *where to look manually* — the `dual_subtitle_sources` / `audio_sources`
+  catalogs rendered as search links. **Torrent entries are links-only by policy:
+  the bot renders tracker-search URLs and never scrapes or downloads from them.**
+
+`/settings → Search language → RU` makes plain-text messages run this RU search
+instead of the EN wordlist flow (`/reset` or `Default (inherit)` switches back).
+Every leg degrades to an explanation instead of failing — a dead provider or a
+missing subproduct never hides the other sections.
+
 ## Quickstart
 
 ```bash
@@ -68,7 +89,9 @@ auto-detected; standalone, set `TG_BOT_WORDSMAN_ROOT=/path/to/wordsman`.
 
 All keys in [config/config.yml](config/config.yml), overridable via `TG_BOT_*` env
 vars (`TELEGRAM_BOT_TOKEN` is also accepted unprefixed). Key knobs: `formats_exclude`,
-`except_list`, `top`, `min_level`, `max_document_mb`, timeouts.
+`except_list`, `top`, `min_level`, `max_document_mb`, timeouts; RU search:
+`search_wordsman_root`, `ru_scan_dirs`, `ru_subs_providers`, `ru_limit`,
+`ru_search_timeout`, `ru_subs_sources_file`/`ru_audio_sources_file`.
 
 ## Tests
 
