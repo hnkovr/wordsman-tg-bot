@@ -1,0 +1,35 @@
+# Self-contained cloud image (Fly.io / Render): bakes the parent wordsman checkout
+# instead of the docker-compose bind-mount. deploy/Dockerfile stays the local/dev image.
+FROM python:3.13-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends bash ca-certificates curl git \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+
+# Parent checkout: main.py + scripts/fetch_srt.sh + subproducts. srt-search is a
+# submodule (public URL); audio-search is a plain directory on this branch. Git-LFS is
+# deliberately absent: data/ checks out as pointer files and the repo cache degrades
+# to live fetches (see config/config.yml use_repo_cache).
+ARG WORDSMAN_REPO=https://github.com/hnkovr/wordsman
+ARG WORDSMAN_REF=feat/productionize-green-ci
+RUN git clone --depth 1 --branch "$WORDSMAN_REF" \
+    --recurse-submodules=subproducts/srt-search --shallow-submodules \
+    "$WORDSMAN_REPO" /wordsman
+
+# Pre-sync the venvs `uv run` uses (fetch_srt.sh and the RU online legs) with the same
+# default groups `uv run` syncs, so no request ever pays the resolver/install cost.
+RUN cd /wordsman/subproducts/srt-search && uv sync \
+    && cd /wordsman/subproducts/audio-search && uv sync
+
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY src ./src
+COPY config ./config
+RUN pip install --no-cache-dir .
+COPY deploy/entrypoint.sh /usr/local/bin/tg-bot-cloud
+RUN chmod +x /usr/local/bin/tg-bot-cloud
+
+ENV TG_BOT_WORDSMAN_ROOT=/wordsman
+EXPOSE 8340
+CMD ["tg-bot-cloud"]

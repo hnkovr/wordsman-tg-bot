@@ -1,0 +1,23 @@
+# Render Blueprint for @wordsman_bot — API-ONLY standby (dockerCommand: tg-bot serve).
+# The long-polling bot lives on Fly (fly.toml): Telegram allows one getUpdates consumer
+# per token, and Render's free plan sleeps on idle — unusable for a poller anyway.
+# To promote Render to the active bot: stop the Fly machine first, move to an
+# always-on plan, and change dockerCommand to tg-bot-cloud (serve + bot).
+services:
+  - type: web
+    name: wordsman-tg-bot
+    runtime: docker
+    region: frankfurt
+    plan: free
+    branch: main
+    dockerfilePath: ./deploy/Dockerfile.cloud
+    dockerContext: .
+    dockerCommand: tg-bot serve
+    healthCheckPath: /healthz
+    envVars:
+      - key: TG_BOT_PORT
+        value: "10000" # Render's canonical web port
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false # set via dashboard/API, never committed
+      - key: TG_BOT_SERVICE_NOTIFY
+        value: "false" # standby stays silent in the service chat
