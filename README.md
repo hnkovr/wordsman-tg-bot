@@ -107,3 +107,27 @@ docker compose -f deploy/docker-compose.yml up --build
 ```
 
 Mounts the parent wordsman checkout at `/wordsman` and runs `api` + `bot` services.
+
+## Cloud deploy (Fly.io + Render)
+
+`deploy/Dockerfile.cloud` is a self-contained image: it clones the parent wordsman
+checkout (with the srt-search subproduct) at build time, so no volume mounts are
+needed. `deploy/entrypoint.sh` runs `serve` + `bot` together; `TG_BOT_PROCESSES=serve`
+keeps only the API.
+
+**Singleton rule:** Telegram allows exactly one `getUpdates` consumer per token —
+exactly one deployment anywhere (cloud or `make run-all` locally) may run the `bot`
+process. The layout here: **Fly = active** (API + poller, always-on), **Render =
+API-only standby** (free plan, sleeps on idle).
+
+```bash
+# Fly (active): one machine only — two would fight over getUpdates
+fly deploy --ha=false
+printf 'TELEGRAM_BOT_TOKEN=%s' "$TG_BOT_TOKEN" | fly secrets import
+
+# Render (standby): render.yaml Blueprint, or service created via the Render API;
+# set TELEGRAM_BOT_TOKEN in the dashboard (sync: false keeps it out of the repo).
+```
+
+State is ephemeral on both platforms: `data/tg_bot.sqlite3` (per-user prefs) resets
+on every deploy. Attach a Fly volume if prefs must survive restarts.
