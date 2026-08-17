@@ -32,3 +32,23 @@ smoke port="8340":
     curl -fsS -X POST "http://localhost:{{ port }}/api/v1/wordlists/movie" \
       -H 'Content-Type: application/json' -d '{"title": "Dune", "year": 2021}' \
       -o /tmp/dune-wordlists.zip && unzip -l /tmp/dune-wordlists.zip
+
+# ── Cloud deploy (README "Cloud deploy", wordsman#43) ──────────────────────────
+# Fly = ACTIVE deployment. --ha=false keeps the getUpdates singleton: one machine,
+# and never enable the `bot` process while another poller holds the same token.
+deploy-fly *args:
+    flyctl deploy --ha=false {{ args }}
+
+fly-logs:
+    flyctl logs -a wordsman-tg-bot --no-tail
+
+fly-status:
+    flyctl status -a wordsman-tg-bot
+
+# Render = API-only standby; autodeploys from main. This forces a manual redeploy.
+render-redeploy service="srv-da0m9sdg1s2s73bvbbo0":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    key=$(grep -m1 '^RENDER_API_KEY=' ~/.ai/.env.secrets | cut -d= -f2-)
+    curl -sf -X POST "https://api.render.com/v1/services/{{ service }}/deploys" \
+      -H "Authorization: Bearer $key" -H 'Content-Type: application/json' -d '{}' | jq '{id, status}'
