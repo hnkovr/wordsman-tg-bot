@@ -144,6 +144,33 @@ class TestLocalScan:
         monkeypatch.setattr(rusearch, "_run", run)
         assert await rusearch.local_scan(ru_settings, "subs") == []
 
+    async def test_russian_audio_omits_lang_flag(
+        self, ru_settings: Settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A wordsman checkout predating --lang must still serve the default RU search
+        run, captured = _fake_run([])
+        monkeypatch.setattr(rusearch, "_run", run)
+        await rusearch.local_scan(ru_settings, "audio", "ru")
+        assert "--lang" not in captured["cmd"]
+
+    @pytest.mark.parametrize("lang", ["en", "original"])
+    async def test_non_russian_audio_passes_lang_flag(
+        self, ru_settings: Settings, monkeypatch: pytest.MonkeyPatch, lang: str
+    ) -> None:
+        run, captured = _fake_run([])
+        monkeypatch.setattr(rusearch, "_run", run)
+        await rusearch.local_scan(ru_settings, "audio", lang)
+        cmd = captured["cmd"]
+        assert cmd[cmd.index("--lang") + 1] == lang
+
+    async def test_subs_never_get_a_lang_flag(
+        self, ru_settings: Settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run, captured = _fake_run([])
+        monkeypatch.setattr(rusearch, "_run", run)
+        await rusearch.local_scan(ru_settings, "subs", "en")
+        assert "--lang" not in captured["cmd"]
+
 
 class TestOnlineSubs:
     async def test_happy_path_passes_ru_env_and_providers(
@@ -196,9 +223,7 @@ class TestOnlineSubs:
 
 
 class TestOnlineAudio:
-    async def test_happy_path(
-        self, ru_settings: Settings, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_happy_path(self, ru_settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
         run, captured = _fake_run(AUDIO_RESULT)
         monkeypatch.setattr(rusearch, "_run", run)
         result = await rusearch.online_audio("Dune", 2021, _with_subproducts(ru_settings))
@@ -226,9 +251,7 @@ class TestSources:
         cfg = ru_settings.model_copy(update={"ru_subs_sources_file": tmp_path / "nope.yml"})
         assert rusearch.load_sources(cfg, "subs") == []
 
-    def test_auto_derived_from_wordsman_root(
-        self, ru_settings: Settings, tmp_path: Path
-    ) -> None:
+    def test_auto_derived_from_wordsman_root(self, ru_settings: Settings, tmp_path: Path) -> None:
         cfg = _with_subproducts(ru_settings)
         config_dir = Path(cfg.wordsman_root) / "subproducts" / "srt-search" / "config"
         config_dir.mkdir(parents=True)
@@ -289,6 +312,16 @@ class TestFormatReport:
         report = rusearch.format_report("Dune", None, mode="audio")
         assert "🔊" in report and "🌐" not in report
 
+    def test_english_audio_report_labels_the_language(self) -> None:
+        report = rusearch.format_report("Dune", 2021, mode="audio", lang="en")
+        assert "поиск EN" in report
+        assert "Аудио-дорожки EN" in report
+
+    def test_original_audio_report_says_search_is_unfiltered(self) -> None:
+        report = rusearch.format_report("Dune", None, mode="audio", lang="original")
+        assert "поиск оригинал" in report
+        assert "без языкового фильтра" in report
+
     def test_titles_are_html_escaped(self) -> None:
         report = rusearch.format_report("<b>Dune</b>", None, mode="subs")
         assert "&lt;b&gt;Dune&lt;/b&gt;" in report
@@ -299,9 +332,7 @@ class TestFormatReport:
         assert report.count("file-") == 2
 
     def test_report_never_exceeds_telegram_limit(self) -> None:
-        hits = [
-            {"path": "x" * 300 + str(i), "kind": "file", "confidence": 0.9} for i in range(40)
-        ]
+        hits = [{"path": "x" * 300 + str(i), "kind": "file", "confidence": 0.9} for i in range(40)]
         report = rusearch.format_report(
             "Dune", None, mode="both", local_subs=hits, local_audio=hits, limit=40
         )

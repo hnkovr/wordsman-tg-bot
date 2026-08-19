@@ -311,12 +311,23 @@ def test_bot_commands_are_telegram_legal() -> None:
 
 class TestRuSearch:
     @pytest.fixture
+    def ru_calls(self) -> dict[str, list]:
+        """Leg arguments recorded by the `ru_ready` fakes."""
+        return {"local": [], "audio": []}
+
+    @pytest.fixture
     def ru_ready(
-        self, fixed_settings: Settings, monkeypatch: pytest.MonkeyPatch
+        self,
+        fixed_settings: Settings,
+        monkeypatch: pytest.MonkeyPatch,
+        ru_calls: dict[str, list],
     ) -> Settings:
         from tg_bot import rusearch
 
-        async def fake_local(settings: Settings, kind: str) -> list[dict]:
+        calls = ru_calls
+
+        async def fake_local(settings: Settings, kind: str, lang: str = "ru") -> list[dict]:
+            calls["local"].append((kind, lang))
             if kind == "subs":
                 return [{"path": "x.ru.srt", "kind": "file", "confidence": 0.9}]
             return []
@@ -326,7 +337,8 @@ class TestRuSearch:
                 items=[{"provider": "subtitlecat", "title": title, "year": year}]
             )
 
-        async def fake_audio(title: str, year: int | None, settings: Settings):
+        async def fake_audio(title: str, year: int | None, settings: Settings, lang: str = "ru"):
+            calls["audio"].append(lang)
             return rusearch.LegResult(reason="audio-search недоступен в этом деплое")
 
         monkeypatch.setattr(rusearch, "local_scan", fake_local)
@@ -378,6 +390,39 @@ class TestRuSearch:
         await botmod.on_ru_audio(message, self._command("Dune"))
         report = message.answers[-1]
         assert "🔊" in report and "🌐" not in report
+
+    async def test_en_audio_requests_english_legs(
+        self, ru_ready: Settings, ru_calls: dict[str, list]
+    ) -> None:
+        message = FakeMessage(text="/en_audio Dune 2021")
+        await botmod.on_en_audio(message, self._command("Dune 2021"))
+        report = message.answers[-1]
+        assert "поиск EN" in report
+        assert "🔊" in report and "🌐" not in report  # audio-only, no subtitles section
+        assert ("audio", "en") in ru_calls["local"]
+        assert ru_calls["audio"] == ["en"]
+
+    async def test_orig_audio_requests_the_original_track(
+        self, ru_ready: Settings, ru_calls: dict[str, list]
+    ) -> None:
+        message = FakeMessage(text="/orig_audio Dune")
+        await botmod.on_orig_audio(message, self._command("Dune"))
+        report = message.answers[-1]
+        assert "поиск оригинал" in report
+        assert ("audio", "original") in ru_calls["local"]
+        assert ru_calls["audio"] == ["original"]
+
+    async def test_audio_commands_are_listed_in_the_menu(self) -> None:
+        commands = {c.command for c in botmod.BOT_COMMANDS}
+        assert {"en_audio", "orig_audio"} <= commands
+
+    async def test_ru_commands_still_search_russian(
+        self, ru_ready: Settings, ru_calls: dict[str, list]
+    ) -> None:
+        message = FakeMessage(text="/ru_audio Dune")
+        await botmod.on_ru_audio(message, self._command("Dune"))
+        assert ru_calls["audio"] == ["ru"]
+        assert "поиск RU" in message.answers[-1]
 
     async def test_ru_pref_routes_plain_text_away_from_en_flow(
         self, ru_ready: Settings, monkeypatch: pytest.MonkeyPatch
