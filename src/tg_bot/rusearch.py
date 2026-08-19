@@ -1,11 +1,14 @@
-"""Russian subtitle & audio search: local scan + online legs + links-only sources.
+"""Subtitle & audio search: local scan + online legs + links-only sources.
+
+Subtitles are Russian-only; audio can be searched in Russian, English, or as the
+release's original (untranslated) track — see ``AUDIO_LANGS``.
 
 Three independent legs, each degrading to an explanation instead of failing:
 
 - local: the stdlib ``wordsman.search`` module of a second wordsman checkout
   (``search_wordsman_root``) scanning already-downloaded files on disk;
 - online subs: srt-search with ``SRT_SEARCH_LANGUAGE=ru`` (subtitlecat);
-- online audio: audio-search ``find --langs ru --json`` (feat-branch subproduct).
+- online audio: audio-search ``find --langs <lang> --json`` (feat-branch subproduct).
 
 Sources: the ``dual_subtitle_sources`` / ``audio_sources`` catalogs rendered as
 links. Torrent entries are links-only by policy — never scraped, never downloaded.
@@ -30,6 +33,20 @@ from tg_bot.logger import log
 from tg_bot.pipeline import PipelineError, _run, resolve_wordsman_root, stderr_reason
 
 Kind = Literal["subs", "audio"]
+#: Audio search languages. "original" is a role (the untranslated track), not a language.
+AudioLang = Literal["ru", "en", "original"]
+AUDIO_LANGS: tuple[str, ...] = ("ru", "en", "original")
+
+#: lang -> (report title suffix, audio section header, message label)
+LANG_LABELS: dict[str, tuple[str, str, str]] = {
+    "ru": ("RU", "🔊 <b>Аудио-дорожки (онлайн)</b>", "русские"),
+    "en": ("EN", "🔊 <b>Аудио-дорожки EN (онлайн)</b>", "английские"),
+    "original": (
+        "оригинал",
+        "🔊 <b>Аудио-дорожки (онлайн, без языкового фильтра)</b>",
+        "оригинальные",
+    ),
+}
 
 #: Telegram rejects messages over 4096 chars; keep margin (mirrors bot._TG_LIMIT).
 _TG_LIMIT = 4000
@@ -84,29 +101,34 @@ def scan_dirs(settings: Settings) -> list[Path]:
     return [directory for directory in dirs if directory.is_dir()]
 
 
-async def local_scan(settings: Settings, kind: Kind) -> list[dict]:
-    """On-disk RU hits via `main.py search-subs|search-audio --json`; best-effort."""
+async def local_scan(settings: Settings, kind: Kind, lang: str = "ru") -> list[dict]:
+    """On-disk hits via `main.py search-subs|search-audio --json`; best-effort.
+
+    `--lang` is passed only for non-Russian audio: a wordsman checkout predating the
+    flag still serves the default RU search instead of failing on an unknown option.
+    """
     try:
         root = resolve_search_root(settings)
     except PipelineError as exc:
-        log.info("ru local scan skipped: {}", exc)
+        log.info("local scan skipped: {}", exc)
         return []
     subcommand = "search-subs" if kind == "subs" else "search-audio"
+    extra = ["--lang", lang] if kind == "audio" and lang != "ru" else []
     hits: list[dict] = []
     for directory in scan_dirs(settings):
-        cmd = [sys.executable, str(root / "main.py"), subcommand, str(directory), "--json"]
+        cmd = [sys.executable, str(root / "main.py"), subcommand, str(directory), "--json", *extra]
         try:
             code, stdout, stderr = await _run(cmd, timeout=settings.ru_search_timeout, cwd=root)
         except PipelineError as exc:  # timeout — scan the remaining dirs anyway
-            log.warning("ru local scan timed out for {}: {}", directory, exc)
+            log.warning("local scan timed out for {}: {}", directory, exc)
             continue
         if code != 0:
-            log.warning("ru local scan failed ({}): {}", code, stderr_reason(stderr, code))
+            log.warning("local scan failed ({}): {}", code, stderr_reason(stderr, code))
             continue
         try:
             hits.extend(json.loads(stdout))
         except ValueError:
-            log.warning("ru local scan returned non-JSON for {}", directory)
+            log.warning("local scan returned non-JSON for {}", directory)
     return hits
 
 
@@ -151,8 +173,14 @@ async def online_subs(title: str, year: int | None, settings: Settings) -> LegRe
     return LegResult(reason="srt-search вернул не-JSON ответ")
 
 
-async def online_audio(title: str, year: int | None, settings: Settings) -> LegResult:
-    """RU audio-track candidates via the audio-search subproduct (`find --json`)."""
+async def online_audio(
+    title: str, year: int | None, settings: Settings, lang: str = "ru"
+) -> LegResult:
+    """Audio-track candidates via the audio-search subproduct (`find --json`).
+
+    `original` has no equivalent in audio-search's language filter, so that search runs
+    unfiltered and the report section says so.
+    """
     try:
         root = resolve_wordsman_root(settings)
     except PipelineError as exc:
@@ -160,24 +188,14 @@ async def online_audio(title: str, year: int | None, settings: Settings) -> LegR
     subproduct = root / "subproducts" / "audio-search"
     if not (subproduct / "pyproject.toml").is_file():
         return LegResult(reason="audio-search недоступен в этом деплое")
-    cmd = [
-        "uv",
-        "run",
-        "audio-search",
-        "find",
-        title,
-        "--langs",
-        "ru",
-        "--limit",
-        str(settings.ru_limit),
-        "--json",
-    ]
+    cmd = ["uv", "run", "audio-search", "find", title]
+    if lang != "original":
+        cmd += ["--langs", lang]
+    cmd += ["--limit", str(settings.ru_limit), "--json"]
     if year:
         cmd += ["--year", str(year)]
     try:
-        code, stdout, stderr = await _run(
-            cmd, timeout=settings.ru_search_timeout, cwd=subproduct
-        )
+        code, stdout, stderr = await _run(cmd, timeout=settings.ru_search_timeout, cwd=subproduct)
     except PipelineError as exc:
         return LegResult(reason=str(exc))
     result = _parse_json_object(stdout)
@@ -332,14 +350,16 @@ def format_report(
     subs_sources: list[SourceLink] | None = None,
     audio_sources: list[SourceLink] | None = None,
     limit: int = 5,
+    lang: str = "ru",
 ) -> str:
-    """The full /ru reply as Telegram HTML; sections depend on `mode`."""
+    """The full search reply as Telegram HTML; sections depend on `mode` and `lang`."""
     shown = f"{title} ({year})" if year else title
     query = f"{title} {year}" if year else title
     want_subs = mode in ("both", "subs")
     want_audio = mode in ("both", "audio")
+    title_label, audio_header, _ = LANG_LABELS.get(lang, LANG_LABELS["ru"])
 
-    lines = [f"🔎 <b>{html.escape(shown)}</b> — поиск RU"]
+    lines = [f"🔎 <b>{html.escape(shown)}</b> — поиск {title_label}"]
 
     local: list[str] = []
     if want_subs:
@@ -358,7 +378,7 @@ def format_report(
     if want_audio:
         result = online_audio_result or LegResult()
         lines += _section(
-            "🔊 <b>Аудио-дорожки (онлайн)</b>",
+            audio_header,
             [_fmt_online_audio(t) for t in result.items[:limit]],
             reason=result.reason,
         )
@@ -372,9 +392,7 @@ def format_report(
         if source.name not in seen:
             sources.append(source)
     if sources:
-        lines += _section(
-            "🔗 <b>Где искать вручную</b>", [_fmt_source(s, query) for s in sources]
-        )
+        lines += _section("🔗 <b>Где искать вручную</b>", [_fmt_source(s, query) for s in sources])
         if any(s.access == "torrent" for s in sources):
             lines.append("<i>Торренты: только ссылки на поиск — скачивание вручную.</i>")
 

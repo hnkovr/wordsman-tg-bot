@@ -41,6 +41,8 @@ HELP_TEXT = (
     "Commands:\n"
     "• /ru <movie> — find Russian subtitles and audio tracks\n"
     "• /ru_subs <movie> · /ru_audio <movie> — subtitles-only / audio-only RU search\n"
+    "• /en_audio <movie> — find English audio tracks\n"
+    "• /orig_audio <movie> — find the original (untranslated) audio track\n"
     "• /files — send already-generated subtitles, wordlists or audio\n"
     "• /settings — adjust your level, word count, formats and search language\n"
     "  (Search language: RU makes plain messages run the RU search instead)\n"
@@ -53,6 +55,8 @@ BOT_COMMANDS = [
     BotCommand(command="ru", description="Find Russian subtitles and audio for a movie"),
     BotCommand(command="ru_subs", description="Find Russian subtitles for a movie"),
     BotCommand(command="ru_audio", description="Find Russian audio tracks for a movie"),
+    BotCommand(command="en_audio", description="Find English audio tracks for a movie"),
+    BotCommand(command="orig_audio", description="Find the original audio track for a movie"),
     BotCommand(command="files", description="Send available subtitles, wordlists or audio"),
     BotCommand(command="settings", description="Adjust your level, word count and formats"),
     BotCommand(command="reset", description="Restore default settings"),
@@ -190,8 +194,14 @@ async def on_files(message: Message) -> None:
 _RU_MODE_LABEL = {"both": "сабы и аудио", "subs": "субтитры", "audio": "аудио-дорожки"}
 
 
-async def _ru_flow(message: Message, bot: Bot | None, query: str, mode: str) -> None:
-    """Run the RU search legs concurrently and reply with one HTML report."""
+async def _search_flow(
+    message: Message, bot: Bot | None, query: str, mode: str, lang: str = "ru"
+) -> None:
+    """Run the search legs concurrently and reply with one HTML report.
+
+    `mode` picks the sections (subtitles / audio / both), `lang` the audio language —
+    "ru", "en", or "original" (the untranslated track). Subtitles stay Russian-only.
+    """
     settings = get_settings()
     notifier = ServiceNotifier(bot, settings)
     who = describe_user(message)
@@ -199,12 +209,16 @@ async def _ru_flow(message: Message, bot: Bot | None, query: str, mode: str) -> 
     if not title:
         await message.answer(
             "Usage: /ru <movie title> [year] — e.g. /ru Dune 2021\n"
-            "Also: /ru_subs (subtitles only), /ru_audio (audio only)."
+            "Also: /ru_subs (subtitles only), /ru_audio (audio only),\n"
+            "/en_audio (English audio), /orig_audio (original audio)."
         )
         return
     shown = f"{title} ({year})" if year else title
-    await notifier.send(f"🔎 {who} ищет RU {_RU_MODE_LABEL[mode]} для “{shown}”")
-    await message.answer(f"Ищу русские {_RU_MODE_LABEL[mode]} для {shown} — может занять минуту…")
+    lang_label = rusearch.LANG_LABELS[lang][2]
+    await notifier.send(f"🔎 {who} ищет {lang_label} {_RU_MODE_LABEL[mode]} для “{shown}”")
+    await message.answer(
+        f"Ищу {lang_label} {_RU_MODE_LABEL[mode]} для {shown} — может занять минуту…"
+    )
 
     want_subs = mode in ("both", "subs")
     want_audio = mode in ("both", "audio")
@@ -213,8 +227,8 @@ async def _ru_flow(message: Message, bot: Bot | None, query: str, mode: str) -> 
         jobs.append(("local_subs", rusearch.local_scan(settings, "subs")))
         jobs.append(("online_subs", rusearch.online_subs(title, year, settings)))
     if want_audio:
-        jobs.append(("local_audio", rusearch.local_scan(settings, "audio")))
-        jobs.append(("online_audio", rusearch.online_audio(title, year, settings)))
+        jobs.append(("local_audio", rusearch.local_scan(settings, "audio", lang)))
+        jobs.append(("online_audio", rusearch.online_audio(title, year, settings, lang)))
     raw = await asyncio.gather(*(coro for _, coro in jobs), return_exceptions=True)
     outcome: dict[str, object] = {}
     for (name, _), value in zip(jobs, raw, strict=True):
@@ -236,28 +250,39 @@ async def _ru_flow(message: Message, bot: Bot | None, query: str, mode: str) -> 
         subs_sources=rusearch.load_sources(settings, "subs") if want_subs else [],
         audio_sources=rusearch.load_sources(settings, "audio") if want_audio else [],
         limit=settings.ru_limit,
+        lang=lang,
     )
     await message.answer(
         report,
         parse_mode="HTML",
         link_preview_options=LinkPreviewOptions(is_disabled=True),
     )
-    await notifier.send(_truncate(f"✅ {who}: RU-поиск по “{shown}” выполнен"))
+    await notifier.send(_truncate(f"✅ {who}: поиск ({lang_label}) по “{shown}” выполнен"))
 
 
 @router.message(Command("ru"))
 async def on_ru(message: Message, command: CommandObject, bot: Bot | None = None) -> None:
-    await _ru_flow(message, bot, command.args or "", mode="both")
+    await _search_flow(message, bot, command.args or "", mode="both")
 
 
 @router.message(Command("ru_subs"))
 async def on_ru_subs(message: Message, command: CommandObject, bot: Bot | None = None) -> None:
-    await _ru_flow(message, bot, command.args or "", mode="subs")
+    await _search_flow(message, bot, command.args or "", mode="subs")
 
 
 @router.message(Command("ru_audio"))
 async def on_ru_audio(message: Message, command: CommandObject, bot: Bot | None = None) -> None:
-    await _ru_flow(message, bot, command.args or "", mode="audio")
+    await _search_flow(message, bot, command.args or "", mode="audio")
+
+
+@router.message(Command("en_audio"))
+async def on_en_audio(message: Message, command: CommandObject, bot: Bot | None = None) -> None:
+    await _search_flow(message, bot, command.args or "", mode="audio", lang="en")
+
+
+@router.message(Command("orig_audio"))
+async def on_orig_audio(message: Message, command: CommandObject, bot: Bot | None = None) -> None:
+    await _search_flow(message, bot, command.args or "", mode="audio", lang="original")
 
 
 async def _send_artifact(callback: CallbackQuery, data: str, settings: Settings) -> None:
@@ -338,7 +363,7 @@ async def on_text(message: Message, bot: Bot | None = None) -> None:
     if prefs.language == "ru":
         # Search-language RU: plain titles run the RU subs/audio search instead
         # of the EN wordlist flow (see /settings → Search language).
-        await _ru_flow(message, bot, message.text or "", mode="both")
+        await _search_flow(message, bot, message.text or "", mode="both")
         return
     shown = f"{title} ({year})" if year else title
     await notifier.send(f"🎬 {who} asked for “{shown}”")
