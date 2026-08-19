@@ -51,18 +51,25 @@ Unset preferences inherit the global `config.yml` defaults (the DB stores only e
 overrides). Each user's generation runs in its own `work/<user_id>/` namespace, so
 concurrent requests for the same title don't collide.
 
-## RU search (/ru, /ru_subs, /ru_audio)
+## Search (/ru, /ru_subs, /ru_audio, /en_audio, /orig_audio)
 
-Finds **Russian subtitles and audio tracks** for a movie and replies with one report
-of four sections (Telegram commands allow only `a-z0-9_` — hence the underscores):
+Finds **subtitles and audio tracks** for a movie and replies with one report of four
+sections (Telegram commands allow only `a-z0-9_` — hence the underscores). Subtitles are
+Russian-only; audio can be Russian, English, or the release's original track:
 
 - **/ru <movie>** — everything; **/ru_subs** — subtitles only; **/ru_audio** — audio only
+- **/en_audio <movie>** — English audio tracks; **/orig_audio <movie>** — the original
+  (untranslated) track, whatever language the release was shot in
 - 📀 *already on disk* — a second wordsman checkout's stdlib `wordsman.search` module
-  scans local media (`search_wordsman_root`; unset → leg disabled)
+  scans local media (`search_wordsman_root`; unset → leg disabled). `--lang` is passed
+  only for non-Russian audio, so a checkout predating the flag still serves `/ru*`
 - 🌐 *online subtitles* — `subproducts/srt-search` with `SRT_SEARCH_LANGUAGE=ru`
   (providers from `ru_subs_providers`, default `subtitlecat`)
-- 🔊 *online audio* — `subproducts/audio-search` `find --langs ru --json`
-  (feat-branch subproduct; absent → the section explains why)
+- 🔊 *online audio* — `subproducts/audio-search` `find --langs <ru|en> --json`
+  (feat-branch subproduct; absent → the section explains why). `/orig_audio` runs that
+  search **without** a language filter — audio-search has no "original" language — and
+  the section header says so; the original-track heuristics live in the local leg
+  (`main.py search-audio --lang original`)
 - 🔗 *where to look manually* — the `dual_subtitle_sources` / `audio_sources`
   catalogs rendered as search links. **Torrent entries are links-only by policy:
   the bot renders tracker-search URLs and never scrapes or downloads from them.**

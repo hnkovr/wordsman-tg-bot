@@ -112,9 +112,9 @@ provider tried. Confirm the fix with `just doctor --e2e` (should fetch `Inceptio
 The deeper fix — reordering srt-search's default so yify leads — is tracked upstream as
 wordsman#22 and belongs in the `wordsman-srt-search` repo, not here.
 
-## RU search sections come back empty (/ru, /ru_subs, /ru_audio)
+## Search sections come back empty (/ru, /ru_subs, /ru_audio, /en_audio, /orig_audio)
 
-Each /ru section degrades independently and says why it is empty — read the report
+Each section degrades independently and says why it is empty — read the report
 first, then `just doctor` (layer "2b. RU search") for the resolved values.
 
 - **📀 «Локально» empty / silent** — `search_wordsman_root` is unset, or points at a
@@ -127,6 +127,14 @@ first, then `just doctor` (layer "2b. RU search") for the resolved values.
   rely on srt-search's default (podnapisi, DNS-dead, wordsman#22).
 - **🔊 «audio-search недоступен в этом деплое»** — expected on `main` parent
   checkouts: audio-search is a feat-branch in-tree subproduct.
+- **📀 empty for /en_audio or /orig_audio only** — the search checkout predates
+  `main.py search-audio --lang` (added in wordsman#41). The local leg logs
+  `local scan failed (2)`; `/ru*` keeps working because `--lang` is omitted for
+  Russian. Pull that checkout, then restart both processes.
+- **🔊 /orig_audio returns tracks in other languages** — by design: the online leg has
+  no "original" filter, so it searches unfiltered (the header says so). The
+  original-track heuristics (ffprobe `disposition.original`, track title, not-the-dub)
+  apply to the local 📀 leg only.
 - **🔗 no sources section** — the catalogs could not be read; check
   `ru_subs_sources_file`/`ru_audio_sources_file` overrides or the auto-derived
   `<wordsman_root>/subproducts/*/config/config.yml` paths. Torrent entries are
