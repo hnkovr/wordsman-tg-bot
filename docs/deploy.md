@@ -32,6 +32,11 @@ to undo a failover silently (observed 2026-08-20 during a Fly→Render drill). `
 now distinguishes the two: `telegram: "webhook"` = this deployment owns the bot,
 `"standby"` = eligible but someone else owns it, `"off"` = not configured for it.
 
+That field reports what the process decided **at its own startup**, so a long-running
+host that was demoted afterwards keeps saying `webhook` until it restarts. It is a
+cheap liveness hint, not the authority — `tg-bot webhook info` and `scripts/doctor.sh`
+layer 4b ask Telegram, which is.
+
 ## Failover between hosts
 
 Both hosts can be eligible at once; only one owns the bot. To move it:
