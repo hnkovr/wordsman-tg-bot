@@ -119,22 +119,34 @@ Mounts the parent wordsman checkout at `/wordsman` and runs `api` + `bot` servic
 
 `deploy/Dockerfile.cloud` is a self-contained image: it clones the parent wordsman
 checkout (with the srt-search subproduct) at build time, so no volume mounts are
-needed. `deploy/entrypoint.sh` runs `serve` + `bot` together; `TG_BOT_PROCESSES=serve`
-keeps only the API.
+needed.
 
-**Singleton rule:** Telegram allows exactly one `getUpdates` consumer per token —
-exactly one deployment anywhere (cloud or `make run-all` locally) may run the `bot`
-process. The layout here: **Fly = active** (API + poller, always-on), **Render =
-API-only standby** (free plan, sleeps on idle).
+The cloud deployment runs in **webhook mode**: Telegram POSTs each update to
+`TG_BOT_PUBLIC_URL` + `TG_BOT_WEBHOOK_PATH`, which `tg-bot serve` handles itself. There
+is no poller, so nothing has to stay awake — the delivery wakes a stopped Fly machine.
+Long polling (`tg-bot bot`) remains the local-development transport.
+
+**Singleton rule:** Telegram serves one transport per token. Registering a webhook
+disables `getUpdates`, so the two can never fight over updates — but the webhook URL is
+also single-valued, so **the deployment that last called `setWebhook` owns the bot**.
+Only the deployment with `TG_BOT_PUBLIC_URL` set ever calls it. The layout here:
+**Fly = active** (webhook), **Render = API-only standby** (`TG_BOT_PUBLIC_URL` unset).
 
 ```bash
-# Fly (active): one machine only — two would fight over getUpdates
-fly deploy --ha=false
-printf 'TELEGRAM_BOT_TOKEN=%s' "$TG_BOT_TOKEN" | fly secrets import
+# Fly (active)
+fly deploy --ha=false                       # --ha=false: one machine answers deliveries
+printf 'TELEGRAM_BOT_TOKEN=%s' "$WORDSMAN_TG_BOT_TOKEN" | fly secrets import
+fly secrets set TG_BOT_WEBHOOK_SECRET="$(openssl rand -hex 16)" -a wordsman-tg-bot
+
+tg-bot webhook info      # what Telegram has registered (url, pending, last error)
+tg-bot webhook set       # re-point Telegram at TG_BOT_PUBLIC_URL
+tg-bot webhook delete    # hand the token back to long polling
 
 # Render (standby): render.yaml Blueprint, or service created via the Render API;
 # set TELEGRAM_BOT_TOKEN in the dashboard (sync: false keeps it out of the repo).
 ```
+
+Details, verification recipe and the trial-plan caveats: [docs/deploy.md](docs/deploy.md).
 
 State is ephemeral on both platforms: `data/tg_bot.sqlite3` (per-user prefs) resets
 on every deploy. Attach a Fly volume if prefs must survive restarts.
