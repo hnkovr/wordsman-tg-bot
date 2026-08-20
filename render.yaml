@@ -1,11 +1,11 @@
 # Render Blueprint for @wordsman_bot — API-ONLY standby (dockerCommand: tg-bot serve).
-# The Telegram side lives on Fly (fly.toml) in webhook mode; this service is a WARM
-# SPARE. It carries TG_BOT_PUBLIC_URL + TG_BOT_WEBHOOK_SECRET (dashboard/API, sync: false)
-# so it CAN take over, but a start never steals a live webhook — it logs "standby" and
-# waits. Promote deliberately: `tg-bot webhook set` here, or redeploy with
-# TG_BOT_WEBHOOK_FORCE_CLAIM=true. Verified as an active host 2026-08-20 (0.24s warm),
-# then handed back to Fly, which wakes a stopped machine in ~9s versus Render's ~50s
-# cold start after its ~15 min idle sleep.
+# STAGING on its OWN bot, @wordsman_render_bot (deploy/targets.yml). Production is Fly on
+# @wordsman_bot; separate tokens cannot contend for a webhook, so redeploying or breaking
+# this service is invisible to production. Env comes from `just deploy-render`
+# (scripts/render-env.py) — do NOT hand-edit env vars in the dashboard: Render's
+# PUT /env-vars replaces the whole list and the script is what merges it.
+# Free plan sleeps after ~15 min idle → ~50s cold start before the first reply (Fly wakes
+# in ~9s), which is why this is staging rather than production.
 services:
   - type: web
     name: wordsman-tg-bot

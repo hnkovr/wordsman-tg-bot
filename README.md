@@ -126,13 +126,27 @@ The cloud deployment runs in **webhook mode**: Telegram POSTs each update to
 is no poller, so nothing has to stay awake — the delivery wakes a stopped Fly machine.
 Long polling (`tg-bot bot`) remains the local-development transport.
 
-**Singleton rule:** Telegram serves one transport per token. Registering a webhook
-disables `getUpdates`, so the two can never fight over updates — but the webhook URL is
-also single-valued, so **one deployment owns the bot**. Only a deployment with
-`TG_BOT_PUBLIC_URL` set is eligible, and an eligible one claims the webhook on startup
-only when it is unset or already its own — never from a live owner. The layout here:
-**Fly = active**, **Render = warm spare** (eligible, one `tg-bot webhook set` from
-taking over). `/healthz` reports which: `webhook` · `standby` · `off`.
+**One bot per host** ([`deploy/targets.yml`](deploy/targets.yml)): Fly is production on
+@wordsman_bot, Render is staging on @wordsman_render_bot. A token has exactly one webhook
+URL, so hosts sharing a token would have to negotiate ownership; separate tokens simply
+cannot contend, and staging can be redeployed at will.
+
+```bash
+just targets            # role, bot and token variable per host
+just bot-token render   # ensure that bot's token — searches every store, asks only if it must
+just deploy-render      # staging (its own bot), just deploy-fly for production
+```
+
+`scripts/bot-token.sh` looks in the process env, `~/.ai/.env.secrets`, project env files,
+the macOS keychain and Bitwarden before asking anyone. When it must ask, it opens
+@BotFather with instructions that differ depending on whether the bot already exists, and
+checks whatever you paste against `getMe` immediately — a token belonging to a *different*
+bot is rejected, not saved.
+
+**Within one bot** the transport is still single-valued: only a deployment with
+`TG_BOT_PUBLIC_URL` set is eligible, and it claims the webhook on startup only when it is
+unset or already its own, never from a live owner. `/healthz` reports which:
+`webhook` · `standby` · `off`.
 
 ```bash
 # Fly (active)

@@ -1,8 +1,38 @@
 # Deploying @wordsman_bot
 
-The bot ships as one image (`deploy/Dockerfile.cloud`) to two hosts: **Fly.io** is the
-active deployment, **Render** is an API-only standby. This page covers how updates reach
-the bot, how to verify a deployment, and the traps that cost real time.
+The bot ships as one image (`deploy/Dockerfile.cloud`), and **every host runs it against
+its own Telegram bot** — `deploy/targets.yml` is the registry. Fly is production
+(@wordsman_bot), Render is staging (@wordsman_render_bot); Amvera, Railway and Hetzner
+have names reserved but are not provisioned.
+
+## One bot per host
+
+A token has exactly one webhook URL, so two deployments sharing a token must negotiate
+who owns it — and a mistake there is silent: the loser simply stops receiving updates.
+Giving each host its own bot removes the negotiation entirely. Separate tokens cannot
+contend, so staging can be redeployed, broken and re-pointed at any time without
+production noticing.
+
+The ownership rules below still apply *within* one bot — a local `tg-bot serve` and the
+cloud deployment of the same target do share a token — but they are no longer what keeps
+the fleet apart.
+
+```bash
+just targets                      # the fleet: role, bot, token variable
+just bot-token render             # ensure that target's token (asks only if it must)
+just bot-tokens-check             # verify every token, never prompt
+```
+
+`scripts/bot-token.sh` resolves a token from **every** store on the machine — process
+env, `~/.ai/.env.secrets`, project env files, the macOS keychain, Bitwarden — before
+asking anyone. If it must ask, it first probes `https://t.me/<handle>` to tell "fetch the
+existing bot's token" from "create the bot", opens @BotFather in the Telegram app, and
+collects the value in a macOS dialog carrying those exact steps. Whatever comes back is
+checked against `getMe` immediately: a token that belongs to a *different* bot is
+rejected outright rather than persisted, because that failure (a deployment running
+@AhmadRuIT_bot) has already cost this project a debugging session.
+
+## How updates reach the bot
 
 ## Two transports, one token
 
