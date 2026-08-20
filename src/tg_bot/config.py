@@ -39,6 +39,17 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("TELEGRAM_BOT_TOKEN", "TG_BOT_TELEGRAM_BOT_TOKEN"),
     )
 
+    # --- Webhook mode (see webhook.py) ---
+    # Public HTTPS base URL of THIS deployment, e.g. https://wordsman-tg-bot.fly.dev.
+    # Empty → webhook mode off, so a standby deployment never claims the token from the
+    # active one. With it set, the deployment needs no always-on poller at all.
+    public_url: str = ""
+    webhook_path: str = "/tg/webhook"
+    # Shared secret Telegram echoes back in X-Telegram-Bot-Api-Secret-Token (Telegram
+    # allows A-Z a-z 0-9 _ - , 1..256 chars). Empty → the header is not checked, which
+    # leaves the endpoint open to forged updates; always set it outside local dev.
+    webhook_secret: str = ""
+
     # Service chat: operational mirror of bot activity (end users still DM the bot).
     # chat_id/thread_id come from a t.me/c/<internal>/<thread> link, see notify.py.
     service_chat_id: int | None = None

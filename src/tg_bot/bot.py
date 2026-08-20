@@ -391,11 +391,8 @@ async def on_text(message: Message, bot: Bot | None = None) -> None:
         await notifier.send(_truncate(f"❌ {who}: “{shown}” failed — {error}"))
 
 
-async def run_bot() -> None:  # pragma: no cover - real Telegram polling loop
-    settings = get_settings()
-    if not settings.telegram_bot_token:
-        raise SystemExit("TELEGRAM_BOT_TOKEN is not set")
-    bot = Bot(token=settings.telegram_bot_token)
+def build_dispatcher(settings: Settings) -> Dispatcher:
+    """The update pipeline shared by both transports — long polling and webhook."""
     dp = Dispatcher()
     # Outer middleware: out-of-scope updates are dropped before any handler, filter or
     # service-chat notification runs. Registered on both update types the bot handles.
@@ -403,6 +400,23 @@ async def run_bot() -> None:  # pragma: no cover - real Telegram polling loop
     dp.message.outer_middleware(guard)
     dp.callback_query.outer_middleware(guard)
     dp.include_router(router)
+    return dp
+
+
+async def run_bot() -> None:  # pragma: no cover - real Telegram polling loop
+    settings = get_settings()
+    if not settings.telegram_bot_token:
+        raise SystemExit("TELEGRAM_BOT_TOKEN is not set")
+    bot = Bot(token=settings.telegram_bot_token)
+    dp = build_dispatcher(settings)
+    # Polling and webhook are mutually exclusive per token: getUpdates fails while a
+    # webhook is registered. Say which deployment owns it instead of dying on a 409.
+    hook = await bot.get_webhook_info()
+    if hook.url:
+        raise SystemExit(
+            f"a webhook is registered at {hook.url} — that deployment owns this token.\n"
+            "Talk to it instead, or run `tg-bot webhook delete` to take polling back."
+        )
     me = await bot.get_me()
     await bot.set_my_commands(BOT_COMMANDS)
     notifier = ServiceNotifier(bot, settings)

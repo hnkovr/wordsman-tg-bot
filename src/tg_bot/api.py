@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
-from tg_bot import __version__, pipeline
+from tg_bot import __version__, pipeline, webhook
 from tg_bot.config import Settings, get_settings
 from tg_bot.logger import log
 from tg_bot.models import MovieRequest
@@ -30,16 +30,29 @@ def _apply_user(
     return effective_settings(settings, store.get(user_id)), str(user_id)
 
 
-def create_app() -> FastAPI:
+def create_app(settings: Settings | None = None) -> FastAPI:
+    settings = settings or get_settings()
+    # Webhook mode folds the Telegram bot into this very service, so `tg-bot serve`
+    # alone becomes a complete deployment — no second always-on process polling
+    # getUpdates, hence no host that must stay awake. None → this is a standby.
+    hook = webhook.TelegramWebhook.build(settings)
     app = FastAPI(
         title="wordsman-tg-bot API",
         version=__version__,
         description="Generate wordsman wordlists from a movie name or an uploaded document.",
+        lifespan=hook.lifespan if hook else None,
     )
+    if hook:
+        hook.install(app)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
-        return {"status": "ok", "service": "tg-bot", "version": __version__}
+        return {
+            "status": "ok",
+            "service": "tg-bot",
+            "version": __version__,
+            "telegram": "webhook" if hook else "off",
+        }
 
     @app.post("/api/v1/wordlists/movie")
     async def wordlists_movie(
