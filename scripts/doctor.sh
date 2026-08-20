@@ -6,7 +6,8 @@
 # user-visible symptom ("I couldn't find subtitles"); this says which one failed.
 #
 # Chain: config/.env → wordsman root → subtitle provider (DNS + live search)
-#        → API health (if serving) → end-to-end sample (--e2e, opt-in, slow).
+#        → API health (if serving) → Telegram transport (webhook vs polling)
+#        → chat scope → end-to-end sample (--e2e, opt-in, slow).
 #
 # Usage: scripts/doctor.sh [--e2e] [--api-url URL]
 # Exit codes: 0 all green | 1 a link is broken | 2 bad usage
@@ -45,6 +46,15 @@ bad() {
   fail=1
 }
 
+# Trailing ` # …` comments are legal in both .env and config.yml, and the readers below
+# are line-greps, so without this a commented key yields the COMMENT as its value: the
+# token turns into a malformed URL and every Telegram call fails for no visible reason.
+# Mirrors python-dotenv: a `#` only starts a comment when whitespace precedes it.
+clean_val() {
+  printf '%s' "$1" | sed -e 's/[[:space:]]#.*$//' -e 's/^[[:space:]]*//' \
+    -e 's/[[:space:]]*$//' -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/"
+}
+
 # Resolve a TG_BOT_* setting the same way pydantic-settings does: env, then env
 # files, then config.yml. Used by several layers below.
 read_cfg() {
@@ -56,7 +66,7 @@ read_cfg() {
   done
   [ -z "$value" ] && [ -f config/config.yml ] &&
     value="$(sed -n "s/^${key}:[[:space:]]*//p" config/config.yml | tail -1)"
-  printf '%s' "$value"
+  clean_val "$value"
 }
 
 # --- Layer 1: secrets & config -------------------------------------------------
@@ -64,7 +74,7 @@ echo "1. config"
 token=""
 for env_file in config/.env .env; do
   [ -z "$token" ] && [ -f "$env_file" ] &&
-    token="$(sed -n 's/^TELEGRAM_BOT_TOKEN=//p' "$env_file" | tail -1)"
+    token="$(clean_val "$(sed -n 's/^TELEGRAM_BOT_TOKEN=//p' "$env_file" | tail -1)")"
 done
 [ -z "$token" ] && token="${TELEGRAM_BOT_TOKEN:-}"
 if [ -n "$token" ]; then
@@ -168,6 +178,37 @@ if health="$(curl -fsS --max-time 5 "$api_url/healthz" 2>/dev/null)"; then
   pass "healthz: $health"
 else
   warn "not serving at $api_url (start with 'make tg-bot-serve' — not required for this check)"
+fi
+
+# --- Layer 4b: Telegram transport (webhook vs polling) -------------------------
+# Which deployment Telegram actually talks to is invisible from this machine otherwise:
+# a stale webhook makes a local `tg-bot bot` refuse to start, and a local webhook left
+# registered by mistake silently swallows every update the cloud bot should answer.
+echo "4b. Telegram transport"
+public_url="$(read_cfg public_url | tr -d '"')" # config.yml keeps it quoted-empty
+if [ -z "$token" ]; then
+  warn "no token — cannot ask Telegram which transport owns this bot"
+else
+  info="$(curl -fsS --max-time 8 "https://api.telegram.org/bot${token}/getWebhookInfo" 2>/dev/null || true)"
+  hook_url="$(printf '%s' "$info" | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')"
+  pending="$(printf '%s' "$info" | sed -n 's/.*"pending_update_count":\([0-9]*\).*/\1/p')"
+  hook_err="$(printf '%s' "$info" | sed -n 's/.*"last_error_message":"\([^"]*\)".*/\1/p')"
+  if [ -z "$info" ]; then
+    warn "getWebhookInfo failed (network or bad token)"
+  elif [ -z "$hook_url" ]; then
+    pass "no webhook registered — long polling ('tg-bot bot') owns this token"
+  else
+    pass "webhook: $hook_url (pending=${pending:-0})"
+    [ -n "$hook_err" ] && warn "Telegram's last delivery failed: $hook_err"
+    if [ -n "$public_url" ]; then
+      case "$hook_url" in
+        "${public_url%/}"/*) ;;
+        *) warn "TG_BOT_PUBLIC_URL here ($public_url) is NOT what Telegram delivers to" ;;
+      esac
+    fi
+    [ -n "${pending:-}" ] && [ "${pending:-0}" -gt 20 ] &&
+      warn "$pending updates queued — the receiving deployment is not answering"
+  fi
 fi
 
 # --- Layer 5: chat scope & group-read permission -------------------------------
