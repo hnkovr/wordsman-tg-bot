@@ -1,0 +1,6 @@
+{"update_id": 900001,
+ "message": {"message_id": 900001, "date": 1787000000,
+   "chat": {"id": -1002281796095, "type": "supergroup", "title": "wordsman service"},
+   "from": {"id": 7770001, "is_bot": false, "first_name": "deploy-check"},
+   "message_thread_id": 800, "is_topic_message": true,
+   "text": "/help", "entities": [{"type": "bot_command", "offset": 0, "length": 5}]}}

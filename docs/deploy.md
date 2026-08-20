@@ -138,13 +138,18 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST \
   https://wordsman-tg-bot.fly.dev/tg/webhook -H 'content-type: application/json' -d '{}'
 # → 403
 
-# 4. end-to-end: a real /help in Telegram, or a signed synthetic update
+# 4. end-to-end: a real /help in Telegram, or the signed synthetic update
 curl -s -o /dev/null -w '%{http_code}\n' -X POST \
   https://wordsman-tg-bot.fly.dev/tg/webhook \
   -H "X-Telegram-Bot-Api-Secret-Token: $TG_BOT_WEBHOOK_SECRET" \
-  -H 'content-type: application/json' -d @update.json
-# → 200, and the reply lands in the chat named by update.json
+  -H 'content-type: application/json' -d @deploy/sample-update.json
+# → 200, and the /help reply lands in the service chat topic
 ```
+
+`deploy/sample-update.json` is a `/help` addressed to the service chat topic, which passes
+the scope guard and produces a real reply — so a 200 with no exception in the logs proves
+the dispatcher and the outbound Telegram call both work. Change `chat.id` /
+`message_thread_id` to aim it elsewhere.
 
 Step 4 is the only one that proves the handlers run. `healthz` alone has never caught a
 broken deployment here.
