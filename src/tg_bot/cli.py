@@ -58,7 +58,8 @@ async def _webhook_action(action: str) -> str:  # pragma: no cover - real Telegr
         if action == "set":
             if not hooks.enabled(settings):
                 raise SystemExit("TG_BOT_PUBLIC_URL is not set — nothing to point Telegram at")
-            return await hooks.TelegramWebhook(settings, bot=api).register()
+            # force=True: asking for this by hand IS the deliberate takeover.
+            return await hooks.TelegramWebhook(settings, bot=api).register(force=True)
         if action == "delete":
             await api.delete_webhook(drop_pending_updates=False)
             return "deleted — the token is free for long polling again"

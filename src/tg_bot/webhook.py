@@ -57,6 +57,8 @@ class TelegramWebhook:
         # Strong refs to in-flight handlers: asyncio only holds weak ones, so a task
         # nobody keeps can be garbage-collected mid-await and the reply never arrives.
         self._tasks: set[asyncio.Task[Any]] = set()
+        #: URL this process registered, or None while another deployment owns the bot.
+        self.registered: str | None = None
 
     @classmethod
     def build(cls, settings: Settings) -> TelegramWebhook | None:
@@ -71,12 +73,30 @@ class TelegramWebhook:
     def url(self) -> str:
         return webhook_url(self.settings)
 
-    async def register(self) -> str:
-        """Point Telegram at this deployment and publish the command menu.
+    async def register(self, *, force: bool = False) -> str | None:
+        """Point Telegram at this deployment, unless another one already owns the bot.
 
-        Called on every cold start. `set_webhook` is idempotent and cheap, and re-sending
-        it is the only way to correct a rotated secret — `getWebhookInfo` never reveals it.
+        Called on every cold start, so it must never steal: `setWebhook` silently wins,
+        and a deployment that re-claimed on each wake would undo a failover the moment
+        anything pinged its health endpoint (observed 2026-08-20). Claim only when the
+        webhook is unset or already ours — taking over from a live owner is a deliberate
+        act (`tg-bot webhook set`, or TG_BOT_WEBHOOK_FORCE_CLAIM).
+
+        Re-sending our own registration stays unconditional: it is idempotent, and it is
+        the only way to correct a rotated secret — `getWebhookInfo` never reveals one.
+
+        Returns the registered URL, or None when another deployment owns the bot.
         """
+        if not (force or self.settings.webhook_force_claim):
+            info = await self.bot.get_webhook_info()
+            if info.url and info.url != self.url:
+                log.warning(
+                    "not claiming the webhook: {} already owns this bot. Serving as a "
+                    "standby — run `tg-bot webhook set` here to take over.",
+                    info.url,
+                )
+                self.registered = None
+                return None
         await self.bot.set_webhook(
             self.url,
             secret_token=self.settings.webhook_secret or None,
@@ -87,6 +107,7 @@ class TelegramWebhook:
         )
         await self.bot.set_my_commands(BOT_COMMANDS)
         log.info("webhook registered at {}", self.url)
+        self.registered = self.url
         return self.url
 
     async def close(self) -> None:

@@ -1,11 +1,11 @@
 # Render Blueprint for @wordsman_bot — API-ONLY standby (dockerCommand: tg-bot serve).
-# The Telegram side lives on Fly (fly.toml) in webhook mode. Telegram delivers to exactly
-# one URL per token, and this service deliberately leaves TG_BOT_PUBLIC_URL unset, so it
-# never claims the webhook away from Fly no matter how often it redeploys.
-# To promote Render to the active bot: set TG_BOT_PUBLIC_URL to this service's own URL
-# plus TG_BOT_WEBHOOK_SECRET and redeploy — whichever deployment last called setWebhook
-# owns the token. Free-plan idle sleep is survivable in webhook mode (the delivery wakes
-# the service and Telegram retries), at the cost of ~50s before the first reply.
+# The Telegram side lives on Fly (fly.toml) in webhook mode; this service is a WARM
+# SPARE. It carries TG_BOT_PUBLIC_URL + TG_BOT_WEBHOOK_SECRET (dashboard/API, sync: false)
+# so it CAN take over, but a start never steals a live webhook — it logs "standby" and
+# waits. Promote deliberately: `tg-bot webhook set` here, or redeploy with
+# TG_BOT_WEBHOOK_FORCE_CLAIM=true. Verified as an active host 2026-08-20 (0.24s warm),
+# then handed back to Fly, which wakes a stopped machine in ~9s versus Render's ~50s
+# cold start after its ~15 min idle sleep.
 services:
   - type: web
     name: wordsman-tg-bot

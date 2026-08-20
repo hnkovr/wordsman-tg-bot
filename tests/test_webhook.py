@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -32,16 +33,27 @@ class FakeSession:
         self.closed = True
 
 
+class FakeWebhookInfo:
+    def __init__(self, url: str) -> None:
+        self.url = url
+
+
 class FakeBot:
     """Records the Telegram API calls the webhook makes, without touching the network."""
 
-    def __init__(self) -> None:
+    def __init__(self, registered_url: str = "") -> None:
         self.session = FakeSession()
         self.set_webhook_calls: list[tuple[str, dict[str, Any]]] = []
         self.commands: list[Any] | None = None
+        #: what Telegram already has for this token
+        self.registered_url = registered_url
+
+    async def get_webhook_info(self) -> FakeWebhookInfo:
+        return FakeWebhookInfo(self.registered_url)
 
     async def set_webhook(self, url: str, **kwargs: Any) -> bool:
         self.set_webhook_calls.append((url, kwargs))
+        self.registered_url = url
         return True
 
     async def set_my_commands(self, commands: list[Any]) -> bool:
@@ -74,8 +86,12 @@ def hook_settings(settings: Settings) -> Settings:
     )
 
 
-def make_hook(settings: Settings, *, fail: bool = False) -> webhook.TelegramWebhook:
-    return webhook.TelegramWebhook(settings, bot=FakeBot(), dispatcher=FakeDispatcher(fail=fail))
+def make_hook(
+    settings: Settings, *, fail: bool = False, registered_url: str = ""
+) -> webhook.TelegramWebhook:
+    return webhook.TelegramWebhook(
+        settings, bot=FakeBot(registered_url), dispatcher=FakeDispatcher(fail=fail)
+    )
 
 
 @pytest.fixture
@@ -137,6 +153,49 @@ def test_health_reports_webhook_mode(hooked: tuple[Any, Any]) -> None:
     _hook, app = hooked
     with TestClient(app) as client:
         assert client.get("/healthz").json()["telegram"] == "webhook"
+
+
+# --- ownership: a cold start must never steal the bot ------------------------------
+
+
+def test_cold_start_does_not_steal_another_deployment(hook_settings: Settings) -> None:
+    """The exact failover-breaker: waking a demoted host re-claimed the webhook."""
+    hook = make_hook(hook_settings, registered_url="https://other.example/tg/webhook")
+    assert asyncio.run(hook.register()) is None
+    assert hook.bot.set_webhook_calls == []
+    assert hook.registered is None
+
+
+def test_cold_start_re_registers_its_own_url(hook_settings: Settings) -> None:
+    """Re-sending our own registration is how a rotated secret gets corrected."""
+    hook = make_hook(hook_settings, registered_url=webhook.webhook_url(hook_settings))
+    assert asyncio.run(hook.register()) == webhook.webhook_url(hook_settings)
+    assert len(hook.bot.set_webhook_calls) == 1
+
+
+def test_cold_start_claims_an_unregistered_bot(hook_settings: Settings) -> None:
+    hook = make_hook(hook_settings)
+    assert asyncio.run(hook.register()) == webhook.webhook_url(hook_settings)
+
+
+def test_takeover_is_possible_but_deliberate(hook_settings: Settings) -> None:
+    """`tg-bot webhook set` (force) and the env override both take over on purpose."""
+    hook = make_hook(hook_settings, registered_url="https://other.example/tg/webhook")
+    assert asyncio.run(hook.register(force=True)) == webhook.webhook_url(hook_settings)
+
+    forced = hook_settings.model_copy(update={"webhook_force_claim": True})
+    hook2 = make_hook(forced, registered_url="https://other.example/tg/webhook")
+    assert asyncio.run(hook2.register()) == webhook.webhook_url(forced)
+
+
+def test_standby_health_distinguishes_owning_from_configured(
+    hook_settings: Settings, monkeypatch
+) -> None:
+    hook = make_hook(hook_settings, registered_url="https://other.example/tg/webhook")
+    monkeypatch.setattr(webhook.TelegramWebhook, "build", classmethod(lambda cls, s: hook))
+    with TestClient(create_app(hook_settings)) as client:
+        # Configured for the webhook, but not the owner — neither "webhook" nor "off".
+        assert client.get("/healthz").json()["telegram"] == "standby"
 
 
 # --- delivery ---------------------------------------------------------------------

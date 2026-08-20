@@ -51,7 +51,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "status": "ok",
             "service": "tg-bot",
             "version": __version__,
-            "telegram": "webhook" if hook else "off",
+            # "standby" = configured for the webhook but another deployment owns it.
+            "telegram": ("webhook" if hook.registered else "standby") if hook else "off",
         }
 
     @app.post("/api/v1/wordlists/movie")

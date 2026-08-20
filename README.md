@@ -128,9 +128,11 @@ Long polling (`tg-bot bot`) remains the local-development transport.
 
 **Singleton rule:** Telegram serves one transport per token. Registering a webhook
 disables `getUpdates`, so the two can never fight over updates — but the webhook URL is
-also single-valued, so **the deployment that last called `setWebhook` owns the bot**.
-Only the deployment with `TG_BOT_PUBLIC_URL` set ever calls it. The layout here:
-**Fly = active** (webhook), **Render = API-only standby** (`TG_BOT_PUBLIC_URL` unset).
+also single-valued, so **one deployment owns the bot**. Only a deployment with
+`TG_BOT_PUBLIC_URL` set is eligible, and an eligible one claims the webhook on startup
+only when it is unset or already its own — never from a live owner. The layout here:
+**Fly = active**, **Render = warm spare** (eligible, one `tg-bot webhook set` from
+taking over). `/healthz` reports which: `webhook` · `standby` · `off`.
 
 ```bash
 # Fly (active)

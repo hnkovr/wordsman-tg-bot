@@ -18,9 +18,35 @@ Telegram allows exactly one of the two per token: registering a webhook makes
 `getUpdates` fail. `run_bot()` checks `getWebhookInfo` up front and exits with the URL
 that owns the token, rather than dying on a 409 later.
 
-A deployment claims the webhook **only** when `TG_BOT_PUBLIC_URL` is set. That single
-switch is what keeps Render (unset) from stealing updates from Fly (set) every time it
-redeploys, and what keeps a local `tg-bot serve` harmless.
+Two rules decide who owns the bot:
+
+1. A deployment is *eligible* only when `TG_BOT_PUBLIC_URL` is set. Unset (a local
+   `tg-bot serve`) means it never talks to Telegram at all.
+2. An eligible deployment claims the webhook on startup **only when the webhook is unset
+   or already its own** — never from a live owner. Taking over is deliberate:
+   `tg-bot webhook set` on the new host (or `TG_BOT_WEBHOOK_FORCE_CLAIM=true`).
+
+Rule 2 exists because rule 1 alone is not enough. With unconditional registration, a
+demoted host re-claimed the bot the moment *anything* woke it — a health check was enough
+to undo a failover silently (observed 2026-08-20 during a Fly→Render drill). `/healthz`
+now distinguishes the two: `telegram: "webhook"` = this deployment owns the bot,
+`"standby"` = eligible but someone else owns it, `"off"` = not configured for it.
+
+## Failover between hosts
+
+Both hosts can be eligible at once; only one owns the bot. To move it:
+
+```bash
+# on the host you are promoting (Render env vars / fly secrets):
+#   TG_BOT_PUBLIC_URL=<its own https URL>   TG_BOT_WEBHOOK_SECRET=<same secret>
+tg-bot webhook set          # deliberate takeover, or hit /tg/webhook after a redeploy
+tg-bot webhook info         # confirm the URL flipped
+```
+
+The old owner needs no shutdown: it will notice at its next start that it no longer owns
+the bot, log a warning and serve as a standby. Measured 2026-08-20 — Fly wakes a stopped
+machine in ~9–10 s, Render answers a warm request in 0.24 s but sleeps after ~15 min idle
+with a ~50 s cold start. Fly stays primary for that reason; Render is a warm spare.
 
 ## Why webhook mode is the default here
 

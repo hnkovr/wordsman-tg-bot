@@ -14,6 +14,9 @@ api_url: "http://localhost:8340"
 public_url: ""
 webhook_path: /tg/webhook
 webhook_secret: ""
+# A cold start claims the webhook only when it is unset or already ours — never from a
+# live owner, or restarting a demoted host would undo a failover. true takes over anyway.
+webhook_force_claim: false
 
 # Short exception list of formats NOT generated (all other supported formats are).
 formats_exclude:

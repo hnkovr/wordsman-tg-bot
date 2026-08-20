@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     # allows A-Z a-z 0-9 _ - , 1..256 chars). Empty → the header is not checked, which
     # leaves the endpoint open to forged updates; always set it outside local dev.
     webhook_secret: str = ""
+    # Take the webhook even when another deployment already holds it. Off by default so a
+    # restart of a demoted host cannot silently undo a failover; `tg-bot webhook set`
+    # is the deliberate way to take over.
+    webhook_force_claim: bool = False
 
     # Service chat: operational mirror of bot activity (end users still DM the bot).
     # chat_id/thread_id come from a t.me/c/<internal>/<thread> link, see notify.py.
