@@ -14,7 +14,9 @@ from tg_bot.config import Settings, get_settings
 
 @pytest.fixture
 def client(settings: Settings) -> TestClient:
-    app = create_app()
+    # Pass the test settings in: create_app() reads them at build time to decide whether
+    # this deployment owns the Telegram webhook, so a real config/.env must not leak in.
+    app = create_app(settings)
     app.dependency_overrides[get_settings] = lambda: settings
     return TestClient(app)
 

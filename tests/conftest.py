@@ -110,10 +110,25 @@ def fake_wordsman_root(tmp_path: Path) -> Path:
     return root
 
 
+@pytest.fixture(autouse=True)
+def isolate_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep `Settings()` from reading the developer's config/.env (wordsman#43).
+
+    Otherwise every "unconfigured" assertion depends on how this machine happens to be
+    deployed — and, since webhook mode is enabled by configuration alone, a test could
+    point the REAL bot at a test URL. Explicit env vars still win; only dotenv is cut.
+    """
+    monkeypatch.setitem(Settings.model_config, "env_file", ())
+
+
 @pytest.fixture
 def settings(fake_wordsman_root: Path, tmp_path: Path) -> Settings:
     os.environ.pop("TELEGRAM_BOT_TOKEN", None)
     return Settings(
+        # No token and no public URL: no test may reach Telegram or claim its webhook.
+        telegram_bot_token="",
+        public_url="",
+        webhook_secret="",
         wordsman_root=fake_wordsman_root,
         work_dir=tmp_path / "work",
         db_path=tmp_path / "prefs.sqlite3",
