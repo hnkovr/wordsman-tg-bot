@@ -33,10 +33,25 @@ smoke port="8340":
       -H 'Content-Type: application/json' -d '{"title": "Dune", "year": 2021}' \
       -o /tmp/dune-wordlists.zip && unzip -l /tmp/dune-wordlists.zip
 
-# ── Cloud deploy (README "Cloud deploy", wordsman#43) ──────────────────────────
-# Fly = ACTIVE deployment. --ha=false keeps the getUpdates singleton: one machine,
-# and never enable the `bot` process while another poller holds the same token.
+# ── Cloud deploy (docs/deploy.md, wordsman#43) ─────────────────────────────────
+# ONE BOT PER HOST (deploy/targets.yml): every target talks to its OWN Telegram bot, so
+# deploying staging can never disturb production. --ha=false stays — a second machine on
+# the same target would answer that bot's deliveries twice.
+
+# List every deploy target with its bot, role and token variable
+targets:
+    @grep -E '^  [a-z]+:|^    (role|bot|token_var):' deploy/targets.yml | paste - - - - | column -t
+
+# Ensure a target's own bot token exists and belongs to it (macOS dialog + @BotFather)
+bot-token target="--all" *args:
+    scripts/bot-token.sh {{ target }} {{ args }}
+
+# Verify every target's token without prompting (doctor / CI lane)
+bot-tokens-check:
+    scripts/bot-token.sh --all --check-only
+
 deploy-fly *args:
+    scripts/bot-token.sh fly --check-only
     flyctl deploy --ha=false {{ args }}
 
 fly-logs:
@@ -45,7 +60,14 @@ fly-logs:
 fly-status:
     flyctl status -a wordsman-tg-bot
 
-# Render = API-only standby; autodeploys from main. This forces a manual redeploy.
+# Render = staging on @wordsman_render_bot. Pushes this target's env (its own bot token,
+# its own public URL) and deploys. PUT /env-vars replaces the whole list, so render-env.py
+# merges rather than sends — see the script's docstring.
+deploy-render *args:
+    scripts/bot-token.sh render --check-only
+    scripts/render-env.py --target render {{ args }}
+
+# Force a redeploy WITHOUT touching env vars (autodeploy from main already covers pushes).
 render-redeploy service="srv-da0m9sdg1s2s73bvbbo0":
     #!/usr/bin/env bash
     set -euo pipefail

@@ -1,0 +1,63 @@
+# Deployment targets — ONE BOT PER HOST.
+#
+# Every host runs the same image against its OWN Telegram bot, so a deploy can never
+# disturb another host: a token has exactly one webhook URL, and separate tokens simply
+# cannot contend for it. That replaces the old "who owns the webhook" negotiation with a
+# fact of configuration, and makes a staging host safe to redeploy at any time.
+#
+# The production bot keeps its historical name (@wordsman_bot); every other host is
+# @wordsman_<host>_bot. Token variables follow the same shape, resolved from any store by
+# ~/.ai/skills/_scripts/secrets/find-secret.sh and asked for (with verification against
+# getMe) by ~/.ai/skills/_scripts/integrations/telegram/ensure-tg-bot.sh.
+#
+# Consumed by scripts/bot-token.sh and the Justfile recipes; mirrored for agents in
+# ~/.ai/skills/_settings/wordsman.yml#tg_bot.deploy.targets.
+
+targets:
+  fly:
+    role: production
+    bot: "@wordsman_bot"
+    title: wordsman
+    token_var: WORDSMAN_TG_BOT_TOKEN
+    url: https://wordsman-tg-bot.fly.dev
+    app: wordsman-tg-bot # fly app name (fly.toml)
+    deploy: just deploy-fly
+    notes: >-
+      Wakes a stopped machine on the incoming delivery (~9s). Trial plan stops the
+      machine 5 min after wake, which only truncates a very long search.
+
+  render:
+    role: staging
+    bot: "@wordsman_render_bot"
+    title: wordsman (render)
+    token_var: WORDSMAN_RENDER_TG_BOT_TOKEN
+    url: https://wordsman-tg-bot.onrender.com
+    service: srv-da0m9sdg1s2s73bvbbo0
+    deploy: just deploy-render
+    notes: >-
+      Free plan sleeps after ~15 min idle → ~50s cold start before the first reply.
+      Fine for staging; that latency is why it is not production.
+
+  # Not provisioned yet — kept here so the naming is decided before someone needs it,
+  # and so `just targets` shows the whole intended fleet rather than only what exists.
+  amvera:
+    role: planned
+    bot: "@wordsman_amvera_bot"
+    title: wordsman (amvera)
+    token_var: WORDSMAN_AMVERA_TG_BOT_TOKEN
+    url: "" # assigned by Amvera on first deploy
+    notes: RU-hosted lane; its CLI login is interactive, so a human must run it.
+
+  railway:
+    role: planned
+    bot: "@wordsman_railway_bot"
+    title: wordsman (railway)
+    token_var: WORDSMAN_RAILWAY_TG_BOT_TOKEN
+    url: ""
+
+  hetzner:
+    role: planned
+    bot: "@wordsman_hetzner_bot"
+    title: wordsman (hetzner)
+    token_var: WORDSMAN_HETZNER_TG_BOT_TOKEN
+    url: ""
