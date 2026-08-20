@@ -1,7 +1,13 @@
-# Fly.io config for @wordsman_bot — the ACTIVE deployment (API + long-polling bot).
-# Deploy from the repo root: fly deploy --ha=false   (--ha=false is MANDATORY: two
-# machines would both long-poll and fight over getUpdates with 409s).
-# Secret: printf 'TELEGRAM_BOT_TOKEN=%s' "$TG_BOT_TOKEN" | fly secrets import
+# Fly.io config for @wordsman_bot — the ACTIVE deployment, in WEBHOOK mode.
+# Telegram POSTs each update to TG_BOT_PUBLIC_URL + TG_BOT_WEBHOOK_PATH, and the POST
+# itself wakes a stopped machine (auto_start_machines). Nothing has to stay awake, so
+# the free trial's "machine stops after 5m" is no longer a blocker — see docs/deploy.md.
+#
+# Deploy from the repo root: fly deploy --ha=false   (--ha=false is MANDATORY: a second
+# machine would answer webhook deliveries with its own copy of the bot.)
+# Secrets: TELEGRAM_BOT_TOKEN (@wordsman_bot — verify with getMe, NOT the AhmadRuIT one)
+# and TG_BOT_WEBHOOK_SECRET (any A-Za-z0-9_- string; Telegram echoes it back per request).
+#   printf 'TELEGRAM_BOT_TOKEN=%s' "$WORDSMAN_TG_BOT_TOKEN" | fly secrets import
 app = "wordsman-tg-bot"
 primary_region = "ams"
 
@@ -11,13 +17,17 @@ primary_region = "ams"
 [env]
   TG_BOT_SERVICE_CHAT_ID = "-1002281796095"
   TG_BOT_SERVICE_THREAD_ID = "800"
+  # Owning this URL is what makes a deployment the active bot; a standby leaves it unset.
+  TG_BOT_PUBLIC_URL = "https://wordsman-tg-bot.fly.dev"
 
 [http_service]
   internal_port = 8340
   force_https = true
-  auto_stop_machines = "off" # the poller must stay up
-  auto_start_machines = true
-  min_machines_running = 1
+  # "off", not "stop": handlers run in the background after the 200, and Fly must not
+  # stop the machine out from under a search that is still fetching.
+  auto_stop_machines = "off"
+  auto_start_machines = true # Telegram's delivery boots a stopped machine
+  min_machines_running = 0   # nothing to keep warm — the webhook wakes it on demand
 
   [[http_service.checks]]
     method = "GET"

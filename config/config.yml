@@ -5,6 +5,16 @@ log_level: INFO
 
 api_url: "http://localhost:8340"
 
+# --- Webhook mode (src/tg_bot/webhook.py) ---
+# public_url = the public HTTPS base URL of THIS deployment. Set → `tg-bot serve` also
+# receives Telegram updates, so no poller and no always-on host are needed, and this
+# deployment owns the token's webhook. Empty → standby: it never calls Telegram and so
+# cannot steal updates from the active one. Set per deployment (fly.toml [env] / Render
+# envVars), not here — and keep webhook_secret out of this file, it is a secret.
+public_url: ""
+webhook_path: /tg/webhook
+webhook_secret: ""
+
 # Short exception list of formats NOT generated (all other supported formats are).
 formats_exclude:
   - sparsed-yaml

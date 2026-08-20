@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Cloud entrypoint: the API and the long-polling bot in one container.
-# TG_BOT_PROCESSES=serve → API-only standby. Telegram allows exactly ONE getUpdates
-# consumer per token, so only one deployment anywhere may include "bot".
+# TG_BOT_PROCESSES=serve is the norm now — with TG_BOT_PUBLIC_URL set, `serve` IS the
+# whole bot (webhook mode, docs/deploy.md); without it, `serve` is an API-only standby.
+# "bot" adds long polling, which Telegram refuses while a webhook is registered — so at
+# most one deployment anywhere may include it, and never the one owning the webhook.
 set -euo pipefail
 procs=",${TG_BOT_PROCESSES:-serve,bot},"
 started=0

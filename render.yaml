@@ -1,8 +1,11 @@
 # Render Blueprint for @wordsman_bot — API-ONLY standby (dockerCommand: tg-bot serve).
-# The long-polling bot lives on Fly (fly.toml): Telegram allows one getUpdates consumer
-# per token, and Render's free plan sleeps on idle — unusable for a poller anyway.
-# To promote Render to the active bot: stop the Fly machine first, move to an
-# always-on plan, and change dockerCommand to tg-bot-cloud (serve + bot).
+# The Telegram side lives on Fly (fly.toml) in webhook mode. Telegram delivers to exactly
+# one URL per token, and this service deliberately leaves TG_BOT_PUBLIC_URL unset, so it
+# never claims the webhook away from Fly no matter how often it redeploys.
+# To promote Render to the active bot: set TG_BOT_PUBLIC_URL to this service's own URL
+# plus TG_BOT_WEBHOOK_SECRET and redeploy — whichever deployment last called setWebhook
+# owns the token. Free-plan idle sleep is survivable in webhook mode (the delivery wakes
+# the service and Telegram retries), at the cost of ~50s before the first reply.
 services:
   - type: web
     name: wordsman-tg-bot
