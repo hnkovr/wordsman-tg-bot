@@ -27,6 +27,7 @@ from tg_bot.config import Settings, get_settings
 from tg_bot.logger import log
 from tg_bot.menu import Row
 from tg_bot.notify import ServiceNotifier, describe_user
+from tg_bot.picks import Pick, get_picks
 from tg_bot.scope import ScopeMiddleware
 from tg_bot.store import get_store
 
@@ -41,6 +42,7 @@ HELP_TEXT = (
     "Commands:\n"
     "• /ru <movie> — find Russian subtitles and audio tracks\n"
     "• /ru_subs <movie> · /ru_audio <movie> — subtitles-only / audio-only RU search\n"
+    "  (results come back as buttons — tap one and I send the subtitle file itself)\n"
     "• /en_audio <movie> — find English audio tracks\n"
     "• /orig_audio <movie> — find the original (untranslated) audio track\n"
     "• /files — send already-generated subtitles, wordlists or audio\n"
@@ -106,6 +108,23 @@ def _markup(rows: list[Row]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=label, callback_data=data) for label, data in row]
+            for row in rows
+        ]
+    )
+
+
+def _result_markup(rows: list[list[rusearch.Button]]) -> InlineKeyboardMarkup | None:
+    """Search-result keyboard: callback buttons deliver files, url buttons open pages."""
+    if not rows:
+        return None
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text=button.label, callback_data=button.data)
+                if button.data
+                else InlineKeyboardButton(text=button.label, url=button.url)
+                for button in row
+            ]
             for row in rows
         ]
     )
@@ -239,10 +258,23 @@ async def _search_flow(
             value = rusearch.LegResult(reason=reason) if name.startswith("online") else []
         outcome[name] = value
 
-    report = rusearch.format_report(
+    picks = rusearch.collect_picks(
+        mode=mode,
+        local_subs=outcome.get("local_subs") or [],
+        local_audio=outcome.get("local_audio") or [],
+        online_subs_result=outcome.get("online_subs"),
+        limit=settings.ru_limit,
+    )
+    # The buttons carry only `<session>:<index>` — 64 bytes of callback_data can hold
+    # neither a candidate id nor a path, so the results themselves live in the store.
+    session_id = get_picks(settings).save(_user_id(message) or 0, shown, picks) if picks else 0
+    report, rows = rusearch.render_results(
         title,
         year,
         mode=mode,
+        lang=lang,
+        session_id=session_id,
+        picks=picks,
         local_subs=outcome.get("local_subs") or [],
         local_audio=outcome.get("local_audio") or [],
         online_subs_result=outcome.get("online_subs"),
@@ -250,11 +282,11 @@ async def _search_flow(
         subs_sources=rusearch.load_sources(settings, "subs") if want_subs else [],
         audio_sources=rusearch.load_sources(settings, "audio") if want_audio else [],
         limit=settings.ru_limit,
-        lang=lang,
     )
     await message.answer(
         report,
         parse_mode="HTML",
+        reply_markup=_result_markup(rows),
         link_preview_options=LinkPreviewOptions(is_disabled=True),
     )
     await notifier.send(_truncate(f"✅ {who}: поиск ({lang_label}) по “{shown}” выполнен"))
@@ -285,6 +317,70 @@ async def on_orig_audio(message: Message, command: CommandObject, bot: Bot | Non
     await _search_flow(message, bot, command.args or "", mode="audio", lang="original")
 
 
+async def _deliver_pick(callback: CallbackQuery, pick: Pick, settings: Settings) -> None:
+    """Send one tapped search result as a real file, or say why it cannot be sent."""
+    if pick.kind == "local":
+        path = rusearch.resolve_local_path(settings, pick.path)
+        if path is None:
+            await callback.message.answer(f"⚠️ Файла больше нет на диске: {pick.path}")
+            return
+        size = path.stat().st_size
+        if size > artifacts.MAX_SEND_BYTES:
+            # Embedded tracks live inside the whole movie file — naming the path is the
+            # only useful answer, since Telegram will never carry it.
+            await callback.message.answer(
+                f"⚠️ {path.name} — {size // (1024 * 1024)} МБ, "
+                f"больше лимита Telegram. Путь на диске:\n{path}"
+            )
+            return
+        await callback.message.answer_document(FSInputFile(path), caption=path.name)
+        return
+    with tempfile.TemporaryDirectory(prefix="tg-bot-ru-") as tmp:
+        saved = await rusearch.download_online_sub(
+            settings, pick.provider, pick.candidate_id, Path(tmp), pick.file_name
+        )
+        await callback.message.answer_document(
+            FSInputFile(saved), caption=f"{saved.name} — {pick.provider}"
+        )
+
+
+async def _send_picks(callback: CallbackQuery, data: str, settings: Settings) -> None:
+    """`d:<session>:<index>` sends one result; `da:<session>` sends every subtitle.
+
+    The callback is answered BEFORE the work starts: a download runs up to
+    `ru_search_timeout` (120 s), far past the few seconds Telegram gives a callback
+    query, and an unanswered button spins and then errors in the client.
+    """
+    parts = data.split(":")
+    user = callback.from_user
+    try:
+        session_id = int(parts[1])
+    except (IndexError, ValueError):
+        await callback.answer("Не понимаю эту кнопку.", show_alert=True)
+        return
+    picks = get_picks(settings).load(session_id, user.id if user else 0)
+    if not picks:
+        await callback.answer(
+            "Результаты этого поиска устарели — повторите поиск.", show_alert=True
+        )
+        return
+    if parts[0] == "da":
+        chosen = [pick for pick in picks if pick.kind == "online_sub"]
+    else:
+        try:
+            chosen = [picks[int(parts[2])]]
+        except (IndexError, ValueError):
+            await callback.answer("Этого варианта больше нет — повторите поиск.", show_alert=True)
+            return
+    await callback.answer("Готовлю файл…" if len(chosen) == 1 else "Готовлю файлы…")
+    for pick in chosen:
+        try:
+            await _deliver_pick(callback, pick, settings)
+        except Exception as exc:  # one dead candidate must not kill the rest
+            log.warning("delivery failed for {}: {}", pick.label, exc)
+            await callback.message.answer(_truncate(f"⚠️ {pick.label}\n{exc}"))
+
+
 async def _send_artifact(callback: CallbackQuery, data: str, settings: Settings) -> None:
     """Handle a `g:<code>:<index>` callback: send the chosen on-disk file."""
     try:
@@ -304,12 +400,15 @@ async def _send_artifact(callback: CallbackQuery, data: str, settings: Settings)
     await callback.answer("Sent ✓")
 
 
-@router.callback_query(F.data.startswith(("m:", "s:", "t:", "g:")))
+@router.callback_query(F.data.startswith(("m:", "s:", "t:", "g:", "d:", "da:")))
 async def on_menu_callback(callback: CallbackQuery) -> None:
     settings = get_settings()
     data = callback.data or ""
     if data.startswith("g:"):
         await _send_artifact(callback, data, settings)
+        return
+    if data.startswith(("d:", "da:")):
+        await _send_picks(callback, data, settings)
         return
     user = callback.from_user
     text, rows = menu.handle_callback(

@@ -10,6 +10,7 @@ import pytest
 
 from tg_bot import bot as botmod
 from tg_bot.config import Settings, get_settings
+from tg_bot.picks import Pick
 
 
 @dataclass
@@ -64,6 +65,11 @@ class FakeResponse:
         if not self._detail:
             raise ValueError("no body")
         return {"detail": self._detail}
+
+
+def _buttons(markup: Any) -> list[Any]:
+    """Flatten an InlineKeyboardMarkup into the buttons it actually shows."""
+    return [button for row in markup.inline_keyboard for button in row]
 
 
 @pytest.fixture
@@ -334,7 +340,14 @@ class TestRuSearch:
 
         async def fake_subs(title: str, year: int | None, settings: Settings):
             return rusearch.LegResult(
-                items=[{"provider": "subtitlecat", "title": title, "year": year}]
+                items=[
+                    {
+                        "provider": "subtitlecat",
+                        "candidate_id": "subs/42/dune",
+                        "title": title,
+                        "year": year,
+                    }
+                ]
             )
 
         async def fake_audio(title: str, year: int | None, settings: Settings, lang: str = "ru"):
@@ -364,15 +377,47 @@ class TestRuSearch:
 
         return SimpleNamespace(args=args)
 
-    async def test_ru_command_full_report(self, ru_ready: Settings) -> None:
+    async def test_ru_command_replies_with_a_keyboard_of_results(self, ru_ready: Settings) -> None:
         message = FakeMessage(text="/ru Dune 2021")
         await botmod.on_ru(message, self._command("Dune 2021"))
         report = message.answers[-1]
         assert "Dune (2021)" in report
         for marker in ("📀", "🌐", "🔊", "🔗"):
             assert marker in report
-        assert "rutracker.org/forum/tracker.php?nm=Dune+2021" in report
         assert "Торренты: только ссылки" in report
+
+        buttons = _buttons(message.markups[-1])
+        # The local hit and the online candidate are tappable, the tracker is a link.
+        assert [b.callback_data for b in buttons if b.callback_data] == ["d:1:0", "d:1:1"]
+        assert [b.url for b in buttons if b.url] == [
+            "https://rutracker.org/forum/tracker.php?nm=Dune+2021"
+        ]
+
+    async def test_results_are_stored_for_the_asking_user(self, ru_ready: Settings) -> None:
+        from tg_bot.picks import get_picks
+
+        message = FakeMessage(text="/ru_subs Dune")
+        await botmod.on_ru_subs(message, self._command("Dune"))
+        stored = get_picks(ru_ready).load(1, 7)
+        assert [p.kind for p in stored] == ["local", "online_sub"]
+
+    async def test_a_search_with_no_results_has_no_dead_buttons(
+        self, ru_ready: Settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tg_bot import rusearch
+
+        async def nothing(settings: Settings, kind: str, lang: str = "ru") -> list[dict]:
+            return []
+
+        async def no_subs(title: str, year: int | None, settings: Settings):
+            return rusearch.LegResult(reason="subtitlecat: HTTP 503")
+
+        monkeypatch.setattr(rusearch, "local_scan", nothing)
+        monkeypatch.setattr(rusearch, "online_subs", no_subs)
+        message = FakeMessage(text="/ru_subs Dune")
+        await botmod.on_ru_subs(message, self._command("Dune"))
+        assert "⚠️ subtitlecat: HTTP 503" in message.answers[-1]
+        assert not [b for b in _buttons(message.markups[-1]) if b.callback_data]
 
     async def test_ru_bare_shows_usage(self, ru_ready: Settings) -> None:
         message = FakeMessage(text="/ru")
@@ -466,3 +511,194 @@ class TestTruncate:
 
 def test_get_settings_cached() -> None:
     assert get_settings() is get_settings()
+
+
+class TestPickDelivery:
+    """Tapping a search result must produce the FILE, not another wall of text."""
+
+    @pytest.fixture
+    def cb(self) -> Any:
+        """A duck-typed callback query recording answers, texts and sent documents."""
+        sent: list[tuple[Any, str]] = []
+        answered: list[str] = []
+        texts: list[str] = []
+
+        @dataclass
+        class CbMessage:
+            async def answer_document(self, input_file: Any, caption: str = "") -> None:
+                sent.append((input_file, caption))
+
+            async def answer(self, text: str, **kw: Any) -> None:
+                texts.append(text)
+
+        @dataclass
+        class Cb:
+            data: str = ""
+            message: CbMessage = field(default_factory=CbMessage)
+            from_user: FakeUser = field(default_factory=FakeUser)
+            sent: list[tuple[Any, str]] = field(default_factory=lambda: sent)
+            answered: list[str] = field(default_factory=lambda: answered)
+            texts: list[str] = field(default_factory=lambda: texts)
+
+            async def answer(self, text: str = "", show_alert: bool = False) -> None:
+                answered.append(text)
+
+        return Cb
+
+    @staticmethod
+    def _store(settings: Settings, picks: list[Any], user_id: int = 7) -> int:
+        from tg_bot.picks import get_picks
+
+        return get_picks(settings).save(user_id, "Dune", picks)
+
+    async def test_local_pick_is_sent_as_a_document(
+        self, fixed_settings: Settings, cb: Any, tmp_path: Path
+    ) -> None:
+        srt = tmp_path / "Dune.ru.srt"
+        srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nПривет\n", encoding="utf-8")
+        session = self._store(fixed_settings, [Pick(kind="local", label="📄", path=str(srt))])
+
+        callback = cb(data=f"d:{session}:0")
+        await botmod.on_menu_callback(callback)
+
+        assert [f.path for f, _ in callback.sent] == [srt]
+        assert callback.sent[0][1] == "Dune.ru.srt"
+
+    async def test_online_pick_is_downloaded_then_sent(
+        self, fixed_settings: Settings, cb: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tg_bot import rusearch
+
+        downloaded = tmp_path / "fetched.ru.srt"
+        downloaded.write_text("1\n", encoding="utf-8")
+        asked: list[tuple[str, str]] = []
+
+        async def fake_download(settings, provider, candidate_id, dest_dir, file_name=""):
+            asked.append((provider, candidate_id))
+            return downloaded
+
+        monkeypatch.setattr(rusearch, "download_online_sub", fake_download)
+        session = self._store(
+            fixed_settings,
+            [Pick(kind="online_sub", label="📄", provider="subtitlecat", candidate_id="subs/1/x")],
+        )
+
+        callback = cb(data=f"d:{session}:0")
+        await botmod.on_menu_callback(callback)
+
+        assert asked == [("subtitlecat", "subs/1/x")]
+        assert [f.path for f, _ in callback.sent] == [downloaded]
+        # Answered BEFORE the download: an unanswered callback spins, then errors.
+        assert callback.answered == ["Готовлю файл…"]
+
+    async def test_download_all_sends_every_online_subtitle(
+        self, fixed_settings: Settings, cb: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tg_bot import rusearch
+
+        async def fake_download(settings, provider, candidate_id, dest_dir, file_name=""):
+            path = tmp_path / f"{candidate_id}.srt"
+            path.write_text("1\n", encoding="utf-8")
+            return path
+
+        monkeypatch.setattr(rusearch, "download_online_sub", fake_download)
+        picks = [
+            Pick(kind="local", label="local", path=str(tmp_path / "absent.srt")),
+            *[
+                Pick(kind="online_sub", label=f"c{i}", provider="subtitlecat", candidate_id=f"c{i}")
+                for i in range(3)
+            ],
+        ]
+        session = self._store(fixed_settings, picks)
+
+        callback = cb(data=f"da:{session}")
+        await botmod.on_menu_callback(callback)
+
+        # Only the online subtitles — the local pick is not a download.
+        assert [f.path.name for f, _ in callback.sent] == ["c0.srt", "c1.srt", "c2.srt"]
+
+    async def test_one_dead_candidate_does_not_stop_the_rest(
+        self, fixed_settings: Settings, cb: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tg_bot import rusearch
+        from tg_bot.pipeline import PipelineError
+
+        async def fake_download(settings, provider, candidate_id, dest_dir, file_name=""):
+            if candidate_id == "bad":
+                raise PipelineError("subtitlecat has no ru track for bad")
+            path = tmp_path / "good.srt"
+            path.write_text("1\n", encoding="utf-8")
+            return path
+
+        monkeypatch.setattr(rusearch, "download_online_sub", fake_download)
+        session = self._store(
+            fixed_settings,
+            [
+                Pick(
+                    kind="online_sub", label="bad one", provider="subtitlecat", candidate_id="bad"
+                ),
+                Pick(kind="online_sub", label="good", provider="subtitlecat", candidate_id="ok"),
+            ],
+        )
+
+        callback = cb(data=f"da:{session}")
+        await botmod.on_menu_callback(callback)
+
+        assert [f.path.name for f, _ in callback.sent] == ["good.srt"]
+        assert any("no ru track" in text for text in callback.texts)
+
+    async def test_expired_session_asks_for_a_new_search(
+        self, fixed_settings: Settings, cb: Any
+    ) -> None:
+        callback = cb(data="d:99999:0")
+        await botmod.on_menu_callback(callback)
+        assert "устарели" in callback.answered[0]
+        assert not callback.sent
+
+    async def test_another_user_cannot_open_a_session(
+        self, fixed_settings: Settings, cb: Any, tmp_path: Path
+    ) -> None:
+        srt = tmp_path / "private.srt"
+        srt.write_text("1", encoding="utf-8")
+        session = self._store(
+            fixed_settings, [Pick(kind="local", label="📄", path=str(srt))], user_id=42
+        )
+        callback = cb(data=f"d:{session}:0")  # FakeUser is id 7, not 42
+        await botmod.on_menu_callback(callback)
+        assert not callback.sent
+
+    async def test_index_out_of_range_is_answered_not_raised(
+        self, fixed_settings: Settings, cb: Any
+    ) -> None:
+        session = self._store(fixed_settings, [Pick(kind="local", label="📄", path="/x.srt")])
+        callback = cb(data=f"d:{session}:9")
+        await botmod.on_menu_callback(callback)
+        assert "больше нет" in callback.answered[0]
+
+    async def test_vanished_local_file_says_so(
+        self, fixed_settings: Settings, cb: Any, tmp_path: Path
+    ) -> None:
+        session = self._store(
+            fixed_settings, [Pick(kind="local", label="📄", path=str(tmp_path / "gone.srt"))]
+        )
+        callback = cb(data=f"d:{session}:0")
+        await botmod.on_menu_callback(callback)
+        assert not callback.sent
+        assert any("больше нет на диске" in text for text in callback.texts)
+
+    async def test_oversized_local_file_answers_with_its_path(
+        self, fixed_settings: Settings, cb: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An embedded RU track means the whole movie — Telegram will never carry it."""
+        from tg_bot import artifacts
+
+        movie = tmp_path / "Dune.2021.mkv"
+        movie.write_bytes(b"x" * 2048)
+        monkeypatch.setattr(artifacts, "MAX_SEND_BYTES", 1024)
+        session = self._store(fixed_settings, [Pick(kind="local", label="🔊", path=str(movie))])
+
+        callback = cb(data=f"d:{session}:0")
+        await botmod.on_menu_callback(callback)
+
+        assert not callback.sent
+        assert any(str(movie) in text for text in callback.texts)

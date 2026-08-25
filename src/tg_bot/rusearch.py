@@ -13,6 +13,10 @@ Three independent legs, each degrading to an explanation instead of failing:
 Sources: the ``dual_subtitle_sources`` / ``audio_sources`` catalogs rendered as
 links. Torrent entries are links-only by policy — never scraped, never downloaded.
 
+Results are returned as a short summary plus a keyboard (``render_results``): every
+subtitle a user could want becomes a button that delivers the actual file, and only the
+manual/torrent sources stay links.
+
 Like menu.py this module is aiogram-free: everything is unit-testable without a bot.
 """
 
@@ -30,6 +34,7 @@ import yaml
 
 from tg_bot.config import Settings
 from tg_bot.logger import log
+from tg_bot.picks import Pick
 from tg_bot.pipeline import PipelineError, _run, resolve_wordsman_root, stderr_reason
 
 Kind = Literal["subs", "audio"]
@@ -50,6 +55,13 @@ LANG_LABELS: dict[str, tuple[str, str, str]] = {
 
 #: Telegram rejects messages over 4096 chars; keep margin (mirrors bot._TG_LIMIT).
 _TG_LIMIT = 4000
+#: Inline-button text is truncated by clients well before Telegram rejects it.
+_LABEL_LIMIT = 48
+
+#: srt-search reads its language from the environment; subtitles here are RU-only, and
+#: the DOWNLOAD honours it too — so a candidate without a RU track fails instead of
+#: quietly delivering the English one.
+_RU_ENV = {"SRT_SEARCH_LANGUAGE": "ru"}
 
 _ACCESS_LABEL = {"torrent": "торрент", "browser": "браузер", "keyless": "открытый"}
 
@@ -72,6 +84,15 @@ class LegResult:
 
     items: list[dict] = field(default_factory=list)
     reason: str | None = None
+
+
+@dataclass(frozen=True)
+class Button:
+    """One inline-keyboard button: either a callback (`data`) or a link (`url`)."""
+
+    label: str
+    data: str | None = None
+    url: str | None = None
 
 
 def resolve_search_root(settings: Settings) -> Path:
@@ -159,7 +180,7 @@ async def online_subs(title: str, year: int | None, settings: Settings) -> LegRe
             cmd,
             timeout=settings.ru_search_timeout,
             cwd=subproduct,
-            env={"SRT_SEARCH_LANGUAGE": "ru"},
+            env=_RU_ENV,
         )
     except PipelineError as exc:
         return LegResult(reason=str(exc))
@@ -266,56 +287,160 @@ def render_link(source: SourceLink, query: str) -> str:
     return source.url
 
 
-def _fmt_local_sub(hit: dict) -> str:
-    where = html.escape(str(hit.get("path", "?")))
-    marker = " (embedded)" if hit.get("kind") == "embedded" else ""
-    confidence = hit.get("confidence", 0)
-    reasons = html.escape(",".join(hit.get("reasons") or []))
-    return f"• {where}{marker} — {confidence:.2f} ({reasons})"
+# ── downloading one chosen candidate ──────────────────────────────────────────────
 
 
-def _fmt_local_audio(hit: dict) -> str:
-    where = html.escape(str(hit.get("path", "?")))
-    parts = []
+async def download_online_sub(
+    settings: Settings,
+    provider: str,
+    candidate_id: str,
+    dest_dir: Path,
+    file_name: str = "",
+) -> Path:
+    """Download the ONE candidate a user tapped, via `srt-search fetch`.
+
+    Distinct from the search leg: no ranking, no "best" heuristic — the choice was already
+    made in the chat. Failure is loud (PipelineError with the provider's own words), since
+    a listed candidate may simply have no Russian track.
+    """
+    root = resolve_wordsman_root(settings)
+    subproduct = root / "subproducts" / "srt-search"
+    if not (subproduct / "pyproject.toml").is_file():
+        raise PipelineError("srt-search недоступен в этом деплое")
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "uv",
+        "run",
+        "srt-search",
+        "fetch",
+        provider,
+        candidate_id,
+        "--out",
+        str(dest_dir),
+        "--json",
+    ]
+    if file_name:
+        cmd += ["--name", file_name]
+    code, stdout, stderr = await _run(
+        cmd, timeout=settings.ru_search_timeout, cwd=subproduct, env=_RU_ENV
+    )
+    payload = _parse_json_object(stdout)
+    if code != 0 or payload is None:
+        raise PipelineError(stderr_reason(stderr, code))
+    saved = Path(str(payload.get("path", "")))
+    if not saved.is_file():
+        raise PipelineError(f"srt-search сообщил о файле {saved}, которого нет")
+    return saved
+
+
+def resolve_local_path(settings: Settings, raw: str) -> Path | None:
+    """Turn a scan hit's path into a real file: absolute as-is, else per scan dir."""
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        return path if path.is_file() else None
+    for directory in scan_dirs(settings):
+        candidate = directory / path
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+# ── labels: what a button says ────────────────────────────────────────────────────
+
+
+def _clip(text: str, limit: int = _LABEL_LIMIT) -> str:
+    flat = " ".join(str(text).split())
+    return flat if len(flat) <= limit else flat[: limit - 1] + "…"
+
+
+def _local_sub_label(hit: dict) -> str:
+    name = Path(str(hit.get("path", "?"))).name
+    confidence = hit.get("confidence")
+    score = f" · {confidence:.2f}" if isinstance(confidence, int | float) else ""
+    where = " (в контейнере)" if hit.get("kind") == "embedded" else ""
+    return _clip(f"📄 {name}{where}{score}")
+
+
+def _local_audio_label(hit: dict) -> str:
+    name = Path(str(hit.get("path", "?"))).name
+    parts: list[str] = []
     if hit.get("stream_index") is not None:
         parts.append(f"#{hit['stream_index']}")
     if hit.get("codec"):
-        parts.append(html.escape(str(hit["codec"])))
+        parts.append(str(hit["codec"]))
     if hit.get("channels"):
         parts.append(f"{hit['channels']}ch")
-    if hit.get("default"):
-        parts.append("[default]")
-    detail = f" — {' '.join(parts)}" if parts else ""
-    return f"• {where}{detail}"
+    detail = f" · {' '.join(parts)}" if parts else ""
+    return _clip(f"🔊 {name}{detail}")
 
 
-def _fmt_online_sub(candidate: dict) -> str:
-    provider = html.escape(str(candidate.get("provider", "?")))
-    title = html.escape(str(candidate.get("title", "?")))
+def _online_sub_label(candidate: dict) -> str:
+    name = candidate.get("release") or candidate.get("title") or candidate.get("file_name") or "?"
     year = candidate.get("year")
-    shown = f"{title} ({year})" if year else title
-    extras = []
-    if candidate.get("release"):
-        extras.append(html.escape(str(candidate["release"])))
-    if candidate.get("downloads"):
-        extras.append(f"⬇{candidate['downloads']}")
-    tail = f" — {' · '.join(extras)}" if extras else ""
-    return f"• [{provider}] {shown}{tail}"
+    provider = candidate.get("provider", "?")
+    return _clip(f"📄 {name}{f' ({year})' if year else ''} · {provider}")
 
 
-def _fmt_online_audio(track: dict) -> str:
-    source = html.escape(str(track.get("source", "?")))
-    label = html.escape(str(track.get("title") or track.get("container") or "track"))
-    extras = []
-    if track.get("codec"):
-        extras.append(html.escape(str(track["codec"])))
+def _online_audio_label(track: dict) -> str:
+    name = track.get("title") or track.get("container") or "track"
+    parts = [str(track[key]) for key in ("codec",) if track.get(key)]
     if track.get("channels"):
-        extras.append(f"{track['channels']}ch")
-    tail = f" — {' '.join(extras)}" if extras else ""
-    url = track.get("url")
-    if url:
-        return f'• [{source}] <a href="{html.escape(str(url))}">{label}</a>{tail}'
-    return f"• [{source}] {label}{tail}"
+        parts.append(f"{track['channels']}ch")
+    detail = f" · {' '.join(parts)}" if parts else ""
+    return _clip(f"🔊 {name} · {track.get('source', '?')}{detail}")
+
+
+def collect_picks(
+    *,
+    mode: str = "both",
+    local_subs: list[dict] | None = None,
+    local_audio: list[dict] | None = None,
+    online_subs_result: LegResult | None = None,
+    limit: int = 5,
+) -> list[Pick]:
+    """Everything the user can tap, in the order the keyboard will show it.
+
+    Online AUDIO is deliberately absent: those tracks are whole media files, far past
+    Telegram's 50 MB upload ceiling, so they stay link buttons instead.
+    """
+    picks: list[Pick] = []
+    if mode in ("both", "subs"):
+        for hit in (local_subs or [])[:limit]:
+            picks.append(
+                Pick(kind="local", label=_local_sub_label(hit), path=str(hit.get("path", "")))
+            )
+    if mode in ("both", "audio"):
+        for hit in (local_audio or [])[:limit]:
+            picks.append(
+                Pick(kind="local", label=_local_audio_label(hit), path=str(hit.get("path", "")))
+            )
+    if mode in ("both", "subs"):
+        for candidate in (online_subs_result or LegResult()).items[:limit]:
+            if not candidate.get("candidate_id"):
+                continue  # nothing to download it by — it would be a dead button
+            picks.append(
+                Pick(
+                    kind="online_sub",
+                    label=_online_sub_label(candidate),
+                    provider=str(candidate.get("provider", "")),
+                    candidate_id=str(candidate["candidate_id"]),
+                    file_name=str(candidate.get("file_name") or ""),
+                )
+            )
+    return picks
+
+
+# ── the reply: a short summary plus the keyboard ──────────────────────────────────
+
+
+def _plural(count: int, one: str, few: str, many: str) -> str:
+    """Russian noun agreement — "1 вариант", "2 варианта", "5 вариантов"."""
+    tail, hundred = count % 10, count % 100
+    if tail == 1 and hundred != 11:
+        return f"{count} {one}"
+    if 2 <= tail <= 4 and not 12 <= hundred <= 14:
+        return f"{count} {few}"
+    return f"{count} {many}"
 
 
 def _fmt_source(source: SourceLink, query: str) -> str:
@@ -325,24 +450,27 @@ def _fmt_source(source: SourceLink, query: str) -> str:
     return f'• <a href="{href}">{label}</a> — {html.escape(access)}'
 
 
-def _section(
-    header: str, lines: list[str], *, reason: str | None = None, empty: str = "• ничего не найдено"
-) -> list[str]:
-    out = ["", header]
-    if lines:
-        out.extend(lines)
-    elif reason:
-        out.append(f"⚠️ {html.escape(reason)}")
-    else:
-        out.append(empty)
-    return out
+def _section(header: str, body: list[str]) -> list[str]:
+    return ["", header, *body]
 
 
-def format_report(
+def _status(count: int, noun: tuple[str, str, str], action: str, reason: str | None) -> list[str]:
+    """One section's body: what was found and what to do, or why nothing was."""
+    if count:
+        return [f"• {_plural(count, *noun)} — {action}"]
+    if reason:
+        return [f"⚠️ {html.escape(reason)}"]
+    return ["• ничего не найдено"]
+
+
+def render_results(
     title: str,
     year: int | None,
     *,
     mode: str = "both",
+    lang: str = "ru",
+    session_id: int = 0,
+    picks: list[Pick] | None = None,
     local_subs: list[dict] | None = None,
     local_audio: list[dict] | None = None,
     online_subs_result: LegResult | None = None,
@@ -350,9 +478,14 @@ def format_report(
     subs_sources: list[SourceLink] | None = None,
     audio_sources: list[SourceLink] | None = None,
     limit: int = 5,
-    lang: str = "ru",
-) -> str:
-    """The full search reply as Telegram HTML; sections depend on `mode` and `lang`."""
+) -> tuple[str, list[list[Button]]]:
+    """The search reply: (HTML summary, keyboard rows).
+
+    The summary says what each leg found; the keyboard carries the results themselves —
+    `d:<session>:<index>` buttons deliver a file, link buttons open a page. Button order
+    matches `picks` exactly, so the index in the callback data is the index in the store.
+    """
+    picks = picks or []
     shown = f"{title} ({year})" if year else title
     query = f"{title} {year}" if year else title
     want_subs = mode in ("both", "subs")
@@ -360,28 +493,48 @@ def format_report(
     title_label, audio_header, _ = LANG_LABELS.get(lang, LANG_LABELS["ru"])
 
     lines = [f"🔎 <b>{html.escape(shown)}</b> — поиск {title_label}"]
+    rows: list[list[Button]] = [
+        [Button(label=pick.label, data=f"d:{session_id}:{index}")]
+        for index, pick in enumerate(picks)
+    ]
 
-    local: list[str] = []
-    if want_subs:
-        local += [_fmt_local_sub(hit) for hit in (local_subs or [])[:limit]]
-    if want_audio:
-        local += [_fmt_local_audio(hit) for hit in (local_audio or [])[:limit]]
-    lines += _section("📀 <b>Локально (уже на диске)</b>", local)
+    local_count = len([p for p in picks if p.kind == "local"])
+    lines += _section(
+        "📀 <b>Локально (уже на диске)</b>",
+        _status(local_count, ("файл", "файла", "файлов"), "жмите кнопку, пришлю файлом", None),
+    )
 
     if want_subs:
         result = online_subs_result or LegResult()
+        online_count = len([p for p in picks if p.kind == "online_sub"])
         lines += _section(
             "🌐 <b>Онлайн-субтитры</b>",
-            [_fmt_online_sub(c) for c in result.items[:limit]],
-            reason=result.reason,
+            _status(
+                online_count,
+                ("вариант", "варианта", "вариантов"),
+                "жмите кнопку, скачаю и пришлю .srt",
+                result.reason,
+            ),
         )
+        if online_count > 1:
+            rows.append([Button(label=f"⬇️ Скачать все ({online_count})", data=f"da:{session_id}")])
+
     if want_audio:
         result = online_audio_result or LegResult()
+        tracks = result.items[:limit]
+        linked = [t for t in tracks if t.get("url")]
         lines += _section(
             audio_header,
-            [_fmt_online_audio(t) for t in result.items[:limit]],
-            reason=result.reason,
+            _status(
+                len(tracks),
+                ("дорожка", "дорожки", "дорожек"),
+                "ссылки на кнопках ниже" if linked else "без прямых ссылок",
+                result.reason,
+            ),
         )
+        rows += [
+            [Button(label=_online_audio_label(track), url=str(track["url"]))] for track in linked
+        ]
 
     sources: list[SourceLink] = []
     seen: set[str] = set()
@@ -392,9 +545,13 @@ def format_report(
         if source.name not in seen:
             sources.append(source)
     if sources:
-        lines += _section("🔗 <b>Где искать вручную</b>", [_fmt_source(s, query) for s in sources])
+        lines += _section("🔗 <b>Где искать вручную</b>", ["• кнопки-ссылки ниже"])
         if any(s.access == "torrent" for s in sources):
             lines.append("<i>Торренты: только ссылки на поиск — скачивание вручную.</i>")
+        link_buttons = [
+            Button(label=_clip(f"🔗 {s.name}"), url=render_link(s, query)) for s in sources
+        ]
+        rows += [link_buttons[i : i + 2] for i in range(0, len(link_buttons), 2)]
 
     text = "\n".join(lines)
-    return text if len(text) <= _TG_LIMIT else text[: _TG_LIMIT - 1] + "…"
+    return (text if len(text) <= _TG_LIMIT else text[: _TG_LIMIT - 1] + "…"), rows

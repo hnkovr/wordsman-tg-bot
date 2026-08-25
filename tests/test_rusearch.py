@@ -277,7 +277,113 @@ class TestSources:
         assert rusearch.render_link(source, "Dune") == "https://example.org"
 
 
-class TestFormatReport:
+class TestDownloadOnlineSub:
+    async def test_fetches_the_chosen_candidate(
+        self, ru_settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        cfg = _with_subproducts(ru_settings)
+        saved = tmp_path / "dl" / "Dune.ru.srt"
+        saved.parent.mkdir(parents=True)
+        saved.write_text("1\n", encoding="utf-8")
+        run, captured = _fake_run({"path": str(saved), "file_name": saved.name, "bytes": 2})
+        monkeypatch.setattr(rusearch, "_run", run)
+
+        got = await rusearch.download_online_sub(
+            cfg, "subtitlecat", "subs/42/dune", tmp_path / "dl", "Dune.ru.srt"
+        )
+
+        assert got == saved
+        cmd = captured["cmd"]
+        assert cmd[:5] == ["uv", "run", "srt-search", "fetch", "subtitlecat"]
+        assert "subs/42/dune" in cmd and "--json" in cmd
+        # The download must honour the same language as the search that listed it.
+        assert captured["env"] == {"SRT_SEARCH_LANGUAGE": "ru"}
+
+    async def test_provider_error_surfaces_its_own_words(
+        self, ru_settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        run, _ = _fake_run("", code=1, stderr="Error: subtitlecat has no ru track for subs/42")
+        monkeypatch.setattr(rusearch, "_run", run)
+        with pytest.raises(PipelineError, match="no ru track"):
+            await rusearch.download_online_sub(
+                _with_subproducts(ru_settings), "subtitlecat", "subs/42", tmp_path
+            )
+
+    async def test_missing_subproduct_degrades(self, ru_settings: Settings, tmp_path: Path) -> None:
+        with pytest.raises(PipelineError, match="srt-search"):
+            await rusearch.download_online_sub(ru_settings, "subtitlecat", "x", tmp_path)
+
+    async def test_vanished_file_is_reported_not_returned(
+        self, ru_settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        run, _ = _fake_run({"path": str(tmp_path / "gone.srt"), "file_name": "gone.srt"})
+        monkeypatch.setattr(rusearch, "_run", run)
+        with pytest.raises(PipelineError, match="которого нет"):
+            await rusearch.download_online_sub(
+                _with_subproducts(ru_settings), "subtitlecat", "x", tmp_path
+            )
+
+
+class TestResolveLocalPath:
+    def test_absolute_path_used_as_is(self, ru_settings: Settings, tmp_path: Path) -> None:
+        srt = tmp_path / "media" / "Dune.ru.srt"
+        srt.write_text("1", encoding="utf-8")
+        assert rusearch.resolve_local_path(ru_settings, str(srt)) == srt
+
+    def test_relative_path_resolved_against_scan_dirs(
+        self, ru_settings: Settings, tmp_path: Path
+    ) -> None:
+        srt = tmp_path / "media" / "Dune.ru.srt"
+        srt.write_text("1", encoding="utf-8")
+        assert rusearch.resolve_local_path(ru_settings, "Dune.ru.srt") == srt
+
+    def test_missing_file_is_none(self, ru_settings: Settings) -> None:
+        assert rusearch.resolve_local_path(ru_settings, "/nope/absent.srt") is None
+
+
+class TestCollectPicks:
+    def test_online_candidates_carry_what_download_needs(self) -> None:
+        picks = rusearch.collect_picks(
+            mode="subs", online_subs_result=LegResult(items=SUBS_RESULT["candidates"])
+        )
+        assert [p.kind for p in picks] == ["online_sub"]
+        assert picks[0].provider == "subtitlecat" and picks[0].candidate_id == "x"
+        assert picks[0].file_name == "dune.ru.srt"
+
+    def test_candidate_without_id_is_skipped(self) -> None:
+        """A button that cannot be downloaded by is worse than no button."""
+        broken = [{"provider": "subtitlecat", "title": "Dune"}]
+        assert rusearch.collect_picks(mode="subs", online_subs_result=LegResult(items=broken)) == []
+
+    def test_local_hits_become_picks_before_online_ones(self) -> None:
+        picks = rusearch.collect_picks(
+            mode="both",
+            local_subs=[{"path": "/m/Dune.ru.srt", "kind": "file", "confidence": 0.97}],
+            local_audio=[{"path": "/m/Dune.mkv", "kind": "embedded", "stream_index": 2}],
+            online_subs_result=LegResult(items=SUBS_RESULT["candidates"]),
+        )
+        assert [p.kind for p in picks] == ["local", "local", "online_sub"]
+        assert picks[0].path == "/m/Dune.ru.srt"
+        assert "Dune.ru.srt" in picks[0].label and "0.97" in picks[0].label
+        assert "#2" in picks[1].label
+
+    def test_audio_only_mode_drops_subtitle_picks(self) -> None:
+        picks = rusearch.collect_picks(
+            mode="audio",
+            local_subs=[{"path": "/m/Dune.ru.srt", "kind": "file"}],
+            online_subs_result=LegResult(items=SUBS_RESULT["candidates"]),
+        )
+        assert picks == []
+
+    def test_limit_caps_each_group(self) -> None:
+        many = [dict(SUBS_RESULT["candidates"][0], candidate_id=f"c{i}") for i in range(10)]
+        picks = rusearch.collect_picks(
+            mode="subs", online_subs_result=LegResult(items=many), limit=3
+        )
+        assert len(picks) == 3
+
+
+class TestRenderResults:
     def _sources(self) -> list[SourceLink]:
         return [
             SourceLink(
@@ -288,52 +394,104 @@ class TestFormatReport:
             )
         ]
 
-    def test_both_mode_renders_all_sections(self) -> None:
-        report = rusearch.format_report(
+    def _picks(self) -> list:
+        return rusearch.collect_picks(
+            mode="subs", online_subs_result=LegResult(items=SUBS_RESULT["candidates"])
+        )
+
+    def _flat(self, rows: list[list[rusearch.Button]]) -> list[rusearch.Button]:
+        return [button for row in rows for button in row]
+
+    def test_every_pick_becomes_a_button_in_order(self) -> None:
+        picks = self._picks()
+        _, rows = rusearch.render_results("Dune", 2021, mode="subs", session_id=7, picks=picks)
+        callbacks = [b for b in self._flat(rows) if b.data]
+        assert callbacks[0].data == "d:7:0"
+        assert callbacks[0].label == picks[0].label
+
+    def test_summary_counts_instead_of_listing(self) -> None:
+        text, _ = rusearch.render_results(
             "Dune",
             2021,
-            mode="both",
-            local_subs=SUBS_RESULT["candidates"],
+            mode="subs",
+            picks=self._picks(),
             online_subs_result=LegResult(items=SUBS_RESULT["candidates"]),
-            online_audio_result=LegResult(reason="audio-search недоступен"),
-            subs_sources=self._sources(),
         )
-        for marker in ("📀", "🌐", "🔊", "🔗"):
-            assert marker in report
-        assert "rutracker.org/forum/tracker.php?nm=Dune+2021" in report
-        assert "Торренты: только ссылки" in report
-        assert "⚠️ audio-search недоступен" in report
+        assert "1 вариант —" in text  # singular, not "1 вариантов"
+        assert "скачаю и пришлю .srt" in text
+
+    def test_russian_plural_agreement(self) -> None:
+        many = [dict(SUBS_RESULT["candidates"][0], candidate_id=f"c{i}") for i in range(5)]
+        picks = rusearch.collect_picks(
+            mode="subs", online_subs_result=LegResult(items=many), limit=5
+        )
+        text, _ = rusearch.render_results("Dune", None, mode="subs", picks=picks)
+        assert "5 вариантов" in text
+
+    def test_download_all_button_only_when_several(self) -> None:
+        one = rusearch.render_results("Dune", None, mode="subs", picks=self._picks(), session_id=3)
+        assert not [b for b in self._flat(one[1]) if b.data == "da:3"]
+        many = [dict(SUBS_RESULT["candidates"][0], candidate_id=f"c{i}") for i in range(3)]
+        picks = rusearch.collect_picks(mode="subs", online_subs_result=LegResult(items=many))
+        _, rows = rusearch.render_results("Dune", None, mode="subs", picks=picks, session_id=3)
+        assert [b.label for b in self._flat(rows) if b.data == "da:3"] == ["⬇️ Скачать все (3)"]
+
+    def test_sources_become_link_buttons_with_the_query(self) -> None:
+        text, rows = rusearch.render_results(
+            "Dune", 2021, mode="subs", subs_sources=self._sources()
+        )
+        links = [b for b in self._flat(rows) if b.url]
+        assert links[0].url == "https://rutracker.org/forum/tracker.php?nm=Dune+2021"
+        assert "Торренты: только ссылки" in text
+
+    def test_audio_tracks_are_link_buttons_never_downloads(self) -> None:
+        """A track is a whole media file — past Telegram's upload ceiling by far."""
+        _, rows = rusearch.render_results(
+            "Dune",
+            None,
+            mode="audio",
+            online_audio_result=LegResult(items=AUDIO_RESULT["tracks"]),
+        )
+        buttons = self._flat(rows)
+        assert all(b.url for b in buttons)
+        assert buttons[0].url == "https://archive.org/x.mp3"
+
+    def test_leg_reason_replaces_the_count(self) -> None:
+        text, _ = rusearch.render_results(
+            "Dune",
+            None,
+            mode="audio",
+            online_audio_result=LegResult(reason="audio-search недоступен"),
+        )
+        assert "⚠️ audio-search недоступен" in text
 
     def test_subs_mode_has_no_audio_section(self) -> None:
-        report = rusearch.format_report("Dune", None, mode="subs")
-        assert "🌐" in report and "🔊" not in report
+        text, _ = rusearch.render_results("Dune", None, mode="subs")
+        assert "🌐" in text and "🔊" not in text
 
     def test_audio_mode_has_no_subs_section(self) -> None:
-        report = rusearch.format_report("Dune", None, mode="audio")
-        assert "🔊" in report and "🌐" not in report
+        text, _ = rusearch.render_results("Dune", None, mode="audio")
+        assert "🔊" in text and "🌐" not in text
 
     def test_english_audio_report_labels_the_language(self) -> None:
-        report = rusearch.format_report("Dune", 2021, mode="audio", lang="en")
-        assert "поиск EN" in report
-        assert "Аудио-дорожки EN" in report
+        text, _ = rusearch.render_results("Dune", 2021, mode="audio", lang="en")
+        assert "поиск EN" in text and "Аудио-дорожки EN" in text
 
     def test_original_audio_report_says_search_is_unfiltered(self) -> None:
-        report = rusearch.format_report("Dune", None, mode="audio", lang="original")
-        assert "поиск оригинал" in report
-        assert "без языкового фильтра" in report
+        text, _ = rusearch.render_results("Dune", None, mode="audio", lang="original")
+        assert "поиск оригинал" in text and "без языкового фильтра" in text
 
     def test_titles_are_html_escaped(self) -> None:
-        report = rusearch.format_report("<b>Dune</b>", None, mode="subs")
-        assert "&lt;b&gt;Dune&lt;/b&gt;" in report
+        text, _ = rusearch.render_results("<b>Dune</b>", None, mode="subs")
+        assert "&lt;b&gt;Dune&lt;/b&gt;" in text
 
-    def test_sections_capped_by_limit(self) -> None:
-        hits = [{"path": f"file-{i}.srt", "kind": "file", "confidence": 0.9} for i in range(10)]
-        report = rusearch.format_report("Dune", None, mode="subs", local_subs=hits, limit=2)
-        assert report.count("file-") == 2
-
-    def test_report_never_exceeds_telegram_limit(self) -> None:
+    def test_summary_never_exceeds_telegram_limit(self) -> None:
         hits = [{"path": "x" * 300 + str(i), "kind": "file", "confidence": 0.9} for i in range(40)]
-        report = rusearch.format_report(
-            "Dune", None, mode="both", local_subs=hits, local_audio=hits, limit=40
-        )
-        assert len(report) <= 4000
+        picks = rusearch.collect_picks(mode="both", local_subs=hits, local_audio=hits, limit=40)
+        text, _ = rusearch.render_results("Dune", None, mode="both", picks=picks, limit=40)
+        assert len(text) <= 4000
+
+    def test_button_labels_stay_short(self) -> None:
+        hits = [{"path": "y" * 300 + ".srt", "kind": "file", "confidence": 0.9}]
+        picks = rusearch.collect_picks(mode="subs", local_subs=hits)
+        assert len(picks[0].label) <= rusearch._LABEL_LIMIT
