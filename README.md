@@ -53,9 +53,13 @@ concurrent requests for the same title don't collide.
 
 ## Search (/ru, /ru_subs, /ru_audio, /en_audio, /orig_audio)
 
-Finds **subtitles and audio tracks** for a movie and replies with one report of four
-sections (Telegram commands allow only `a-z0-9_` — hence the underscores). Subtitles are
-Russian-only; audio can be Russian, English, or the release's original track:
+Finds **subtitles and audio tracks** for a movie and replies with a short summary plus
+a keyboard: every result is a button, and tapping one **delivers the file** — a local hit
+is sent straight from disk, an online candidate is downloaded first (`srt-search fetch`,
+same `SRT_SEARCH_LANGUAGE=ru`) and then attached as `.srt`. Only manual/torrent sources
+and whole audio tracks stay links. Telegram commands allow only `a-z0-9_` — hence the
+underscores. Subtitles are Russian-only; audio can be Russian, English, or the release's
+original track:
 
 - **/ru <movie>** — everything; **/ru_subs** — subtitles only; **/ru_audio** — audio only
 - **/en_audio <movie>** — English audio tracks; **/orig_audio <movie>** — the original
@@ -71,8 +75,17 @@ Russian-only; audio can be Russian, English, or the release's original track:
   the section header says so; the original-track heuristics live in the local leg
   (`main.py search-audio --lang original`)
 - 🔗 *where to look manually* — the `dual_subtitle_sources` / `audio_sources`
-  catalogs rendered as search links. **Torrent entries are links-only by policy:
+  catalogs rendered as link buttons. **Torrent entries are links-only by policy:
   the bot renders tracker-search URLs and never scrapes or downloads from them.**
+
+Buttons carry only `<session>:<index>`: 64 bytes of `callback_data` hold neither a
+candidate id nor a path, so the results live in `search_picks` (same SQLite file as the
+prefs, see [src/tg_bot/picks.py](src/tg_bot/picks.py)) for 24 h, capped per user and
+readable only by the user who searched. A tap on a pruned session answers «повторите
+поиск» rather than downloading something stale. `⬇️ Скачать все` sends every online
+subtitle in one go; a candidate with no Russian track fails alone and names its reason —
+the others still arrive. Audio tracks are never downloaded: they are whole media files,
+far past Telegram's 50 MB upload ceiling, so they stay link buttons.
 
 `/settings → Search language → RU` makes plain-text messages run this RU search
 instead of the EN wordlist flow (`/reset` or `Default (inherit)` switches back).

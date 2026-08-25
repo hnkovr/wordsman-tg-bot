@@ -131,6 +131,13 @@ else
 fi
 if [ -f "$root/subproducts/srt-search/pyproject.toml" ]; then
   pass "srt-search subproduct present (online RU subs leg)"
+  # The result buttons download through `srt-search fetch`. An older pin still SEARCHES
+  # fine, so the failure would only show up as every download button erroring in chat.
+  if grep -q '^def fetch(' "$root/subproducts/srt-search/src/srt_search/cli.py" 2>/dev/null; then
+    pass "srt-search has 'fetch' (result buttons can deliver .srt files)"
+  else
+    warn "srt-search pin predates 'fetch' — search works, download buttons will fail"
+  fi
 else
   warn "no subproducts/srt-search under $root — online RU subs leg disabled"
 fi

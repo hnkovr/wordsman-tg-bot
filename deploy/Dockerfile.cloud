@@ -11,8 +11,12 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 # submodule (public URL); audio-search is a plain directory on this branch. Git-LFS is
 # deliberately absent: data/ checks out as pointer files and the repo cache degrades
 # to live fetches (see config/config.yml use_repo_cache).
+# WORDSMAN_REF must be a branch that still EXISTS: the old feat/productionize-green-ci
+# was deleted when everything was consolidated into main (wordsman#31, 2026-08-24), and a
+# rebuild against a deleted branch fails at `git clone`, not at runtime. main now carries
+# both the srt-search submodule pin and the audio-search directory.
 ARG WORDSMAN_REPO=https://github.com/hnkovr/wordsman
-ARG WORDSMAN_REF=feat/productionize-green-ci
+ARG WORDSMAN_REF=main
 RUN git clone --depth 1 --branch "$WORDSMAN_REF" \
     --recurse-submodules=subproducts/srt-search --shallow-submodules \
     "$WORDSMAN_REPO" /wordsman
