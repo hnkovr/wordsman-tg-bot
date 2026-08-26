@@ -1,5 +1,8 @@
 # Handoff — RU search result buttons + the build blocker (2026-08-26)
 
+Open issues: **#49** (build blocker — nothing deploys until this lands), **#51** (rotate
+the leaked webhook secret, rides #49's deploy), **#46** (feature; needs one human check).
+
 Tracker: hnkovr/wordsman [#46](https://github.com/hnkovr/wordsman/issues/46) (feature),
 [#49](https://github.com/hnkovr/wordsman/issues/49) (build blocker + publication incident).
 
@@ -91,3 +94,28 @@ scripts. Guardrails added and pushed (`~/.ai` `80b253f`): a content audit
 `exposure-report.sh`, both wired into `/github-repo-set-visibility`, and a PreToolUse hook
 `publish-guard.py` that denies a raw gh visibility flip. The hook registration lives in
 `~/.claude/settings.json`, which is **gitignored** — it must be re-added on another machine.
+
+## Agentic artifacts from this session (outside these repos)
+
+- `~/.ai` — content audit + exposure report wired into `/github-repo-set-visibility`;
+  `publish-guard.py` PreToolUse hook with **22 pinned cases**
+  (`_scripts/git/repos/hooks/tests/test_publish_guard.py`); `GH_HNKOVR_READ_TOKEN`
+  registered in `_settings/secrets_catalog.yml`; live deploy state in `_settings/wordsman.yml`.
+- Memory (`~/.claude/projects/.../memory/`, **gitignored — on disk only**):
+  `tg-bot-webhook-deployment` corrected to say Fly is down and Render cannot take over;
+  `repo-publish-guard` added; `wordsman-repo-state` says the repo must stay private.
+- `~/.claude/settings.json` registers the hook and is **gitignored** — re-add on another machine.
+- `.tmp/SESSION-20260826-ru-buttons.md` (gitignored) records which scratch artifacts were
+  dropped and why. Nothing there is promotion material.
+
+## Next action, in order
+
+1. Mint `GH_HNKOVR_READ_TOKEN` (fine-grained, Contents:Read, covering the private hnkovr
+   repos builds need) → `ask-secret-gui.sh GH_HNKOVR_READ_TOKEN https://github.com/settings/personal-access-tokens/new`
+2. `--secret-file gh_token=WORDSMAN_REPO_READ_TOKEN,GH_HNKOVR_READ_TOKEN` → deploy.
+   This is the first real test of whether Render puts secret files in the build context
+   and honours `--mount=type=bind`; if not, fall back to Actions → GHCR.
+3. Same deploy: rotate `TG_BOT_WEBHOOK_SECRET` (#51), then `--token-var WORDSMAN_TG_BOT_TOKEN`
+   for the failover the owner asked for.
+4. Re-run `exposure-report hnkovr/wordsman` — GitHub's per-day traffic lags ~24h.
+5. Human check: `/ru_subs Interstellar` to @wordsman_render_bot; a button must return a .srt.
