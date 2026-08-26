@@ -99,6 +99,16 @@ def main() -> None:
     ap.add_argument("--target", default="render")
     ap.add_argument("--no-deploy", action="store_true", help="update env vars only")
     ap.add_argument("--show", action="store_true", help="print the key names and exit")
+    ap.add_argument(
+        "--token-var",
+        default=None,
+        help=(
+            "serve a DIFFERENT bot than this target owns — a deliberate failover, e.g. "
+            "--token-var WORDSMAN_TG_BOT_TOKEN to run production from here while its own "
+            "host is down. Breaks one-bot-per-host for as long as it is set, so the two "
+            "deployments must never both run with it."
+        ),
+    )
     args = ap.parse_args()
 
     target = load_target(args.target)
@@ -112,7 +122,9 @@ def main() -> None:
         return
 
     # This host's own bot, its own public URL: one bot per host means no webhook contention.
-    current["TELEGRAM_BOT_TOKEN"] = find_secret(target["token_var"])
+    # --token-var overrides that on purpose, for a failover.
+    token_var = args.token_var or target["token_var"]
+    current["TELEGRAM_BOT_TOKEN"] = find_secret(token_var)
     current["TG_BOT_PUBLIC_URL"] = target["url"]
     current["TG_BOT_WEBHOOK_SECRET"] = find_secret("TG_BOT_WEBHOOK_SECRET")
     current.setdefault("TG_BOT_PORT", "10000")  # Render's canonical web port
@@ -124,7 +136,8 @@ def main() -> None:
         [{"key": k, "value": v} for k, v in sorted(current.items())],
     )
     print(f"{args.target}: env-vars =", sorted(e["envVar"]["key"] for e in result))
-    print(f"{args.target}: bot =", target["bot"], "via", target["token_var"])
+    serving = target["bot"] if token_var == target["token_var"] else f"NOT its own bot — {token_var}"
+    print(f"{args.target}: bot =", serving, "via", token_var)
     if args.no_deploy:
         return
     deploy = api("POST", f"/services/{service}/deploys", {"clearCache": "do_not_clear"})

@@ -83,6 +83,30 @@ the bot, log a warning and serve as a standby. Measured 2026-08-20 — Fly wakes
 machine in ~9–10 s, Render answers a warm request in 0.24 s but sleeps after ~15 min idle
 with a ~50 s cold start. Fly stays primary for that reason; Render is a warm spare.
 
+## Failover to Render is gated on a working build
+
+Moving a bot to Render means changing `TELEGRAM_BOT_TOKEN` there, and **Render applies an
+env change only on a deploy**. Neither of the cheaper restarts carries it (measured
+2026-08-25):
+
+| Attempt | Result |
+| --- | --- |
+| `POST /services/<id>/restart` | HTTP 200, container comes back with the **old** env |
+| `POST /services/<id>/rollback` | HTTP 400 `rollback is not supported for deploy <id>` |
+| `POST /services/<id>/deploys` | rebuilds — and the build is what's broken |
+
+So while `deploy/Dockerfile.cloud` cannot clone the private parent repo (wordsman#49),
+a failover to Render is **not available at all**: the running image keeps serving whatever
+bot it started with. Fix the build first; the failover is a one-liner after that:
+
+```bash
+python3 scripts/render-env.py --target render --token-var WORDSMAN_TG_BOT_TOKEN
+```
+
+`--token-var` deliberately breaks one-bot-per-host for as long as it is set, so the two
+deployments must never both run with it. Clear the old host's webhook first
+(`deleteWebhook`) so the new one can claim without `TG_BOT_WEBHOOK_FORCE_CLAIM`.
+
 ## Why webhook mode is the default here
 
 Fly's free trial stops a machine five minutes after it wakes:
