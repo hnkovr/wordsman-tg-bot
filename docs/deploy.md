@@ -83,6 +83,35 @@ the bot, log a warning and serve as a standby. Measured 2026-08-20 — Fly wakes
 machine in ~9–10 s, Render answers a warm request in 0.24 s but sleeps after ~15 min idle
 with a ~50 s cold start. Fly stays primary for that reason; Render is a warm spare.
 
+## The build needs a credential (the image clones a private repo)
+
+`deploy/Dockerfile.cloud` clones **private** `hnkovr/wordsman` for `main.py`,
+`scripts/fetch_srt.sh`, `conf/` and the `audio-search` subproduct. Without a credential the
+build dies at `could not read Username for 'https://github.com'`.
+
+The token arrives as a Render **secret file** named `gh_token` — Render drops secret files
+into the build context, and the Dockerfile bind-mounts it for exactly one `RUN`, so nothing
+persists in a layer:
+
+```bash
+python3 scripts/render-env.py --target render \
+    --secret-file gh_token=WORDSMAN_REPO_READ_TOKEN,GH_HNKOVR_READ_TOKEN
+```
+
+The list is "project override first, account default last": `GH_HNKOVR_READ_TOKEN` is one
+fine-grained **Contents: Read-only** token covering the private hnkovr repos that builds
+need, and any project wanting a narrower scope shadows it. Catalogued in
+`~/.ai/skills/_settings/secrets_catalog.yml`.
+
+Two things that are NOT alternatives:
+
+- **a build `ARG`** — ARG values persist in image metadata for anyone who can pull;
+- **making the repo public** — `data/` carries third-party subtitle scripts (wordsman#49).
+
+`GH_TOKEN`, the broad `gh` CLI user token, must never be used here: it can push and delete.
+Local builds of this image need the file in the context — `printf '%s' "$GH_HNKOVR_READ_TOKEN" > gh_token`
+(gitignored, so it cannot be committed).
+
 ## Failover to Render is gated on a working build
 
 Moving a bot to Render means changing `TELEGRAM_BOT_TOKEN` there, and **Render applies an
