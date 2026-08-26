@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Self-contained cloud image (Fly.io / Render): bakes the parent wordsman checkout
 # instead of the docker-compose bind-mount. deploy/Dockerfile stays the local/dev image.
 FROM python:3.13-slim
@@ -15,11 +16,23 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 # was deleted when everything was consolidated into main (wordsman#31, 2026-08-24), and a
 # rebuild against a deleted branch fails at `git clone`, not at runtime. main now carries
 # both the srt-search submodule pin and the audio-search directory.
-ARG WORDSMAN_REPO=https://github.com/hnkovr/wordsman
+#
+# hnkovr/wordsman is PRIVATE, so this clone needs a credential — and the credential must
+# never end up in the image. A build ARG would: ARG values persist in image metadata for
+# anyone who can pull. So the token arrives as a Render *secret file* named `gh_token`,
+# which Render drops into the build context, and is bind-mounted for exactly one RUN.
+# A mount leaves nothing in the layer, and `$(cat …)` is not expanded in the build log.
+#
+# Building this image locally therefore needs that file present in the context:
+#     printf '%s' "$WORDSMAN_REPO_READ_TOKEN" > gh_token     # never commit it
+# Publishing the repo is NOT an alternative — see wordsman#49.
+ARG WORDSMAN_REPO=github.com/hnkovr/wordsman
 ARG WORDSMAN_REF=main
-RUN git clone --depth 1 --branch "$WORDSMAN_REF" \
+RUN --mount=type=bind,source=gh_token,target=/run/gh_token \
+    git -c credential.helper='!f(){ echo username=x-access-token; echo "password=$(cat /run/gh_token)"; };f' \
+    clone --depth 1 --branch "$WORDSMAN_REF" \
     --recurse-submodules=subproducts/srt-search --shallow-submodules \
-    "$WORDSMAN_REPO" /wordsman
+    "https://$WORDSMAN_REPO" /wordsman
 
 # Pre-sync the venvs `uv run` uses (fetch_srt.sh and the RU online legs) with the same
 # default groups `uv run` syncs, so no request ever pays the resolver/install cost.

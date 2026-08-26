@@ -100,6 +100,17 @@ def main() -> None:
     ap.add_argument("--no-deploy", action="store_true", help="update env vars only")
     ap.add_argument("--show", action="store_true", help="print the key names and exit")
     ap.add_argument(
+        "--secret-file",
+        default=None,
+        metavar="NAME=VAR",
+        help=(
+            "upload a Render SECRET FILE named NAME holding the resolved secret VAR, then "
+            "exit. Render drops secret files into the build context, which is how the "
+            "Docker build authenticates its clone of the private parent repo without the "
+            "token ever entering an image layer (a build ARG would)."
+        ),
+    )
+    ap.add_argument(
         "--token-var",
         default=None,
         help=(
@@ -119,6 +130,21 @@ def main() -> None:
     }
     if args.show:
         print("\n".join(sorted(current)))
+        return
+
+    if args.secret_file:
+        name, _, var = args.secret_file.partition("=")
+        if not (name and var):
+            sys.exit("--secret-file expects NAME=VAR")
+        existing = [
+            {"name": f["secretFile"]["name"], "content": f["secretFile"].get("content", "")}
+            for f in api("GET", f"/services/{service}/secret-files?limit=100")
+        ]
+        # PUT replaces the whole list, exactly like env-vars — merge, never overwrite.
+        merged = [f for f in existing if f["name"] != name]
+        merged.append({"name": name, "content": find_secret(var)})
+        api("PUT", f"/services/{service}/secret-files", merged)
+        print(f"{args.target}: secret-files =", sorted(f["name"] for f in merged), f"<- ${var}")
         return
 
     # This host's own bot, its own public URL: one bot per host means no webhook contention.

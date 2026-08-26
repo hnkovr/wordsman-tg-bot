@@ -14,3 +14,5 @@ dist/
 # --- tmp-dir:begin (auto-upsert via scripts/upsert_docs.py) ---
 .tmp/
 # --- tmp-dir:end ---
+
+gh_token

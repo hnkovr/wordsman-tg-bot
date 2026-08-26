@@ -41,6 +41,38 @@ Render deploys the prebuilt image** (private repo is natively reachable inside A
 no token is created, stored or mounted anywhere). `scripts/render-env.py --token-var
 WORDSMAN_TG_BOT_TOKEN` is the failover one-liner once builds work.
 
+## MUST DO on the next successful deploy — rotate TG_BOT_WEBHOOK_SECRET
+
+Its value was printed into a session transcript on 2026-08-26 (a raw `GET /env-vars` dump).
+It is the only auth on `/tg/webhook`, so anyone holding that transcript can POST forged
+updates to the bot; it does NOT expose the bot token. It cannot be rotated on its own,
+because Telegram and the container must change together and the container's env only
+changes on a deploy. So, in the SAME deploy that fixes the build:
+
+```bash
+NEW=$(openssl rand -hex 16)     # store in ~/.ai/.env.secrets as TG_BOT_WEBHOOK_SECRET
+python3 scripts/render-env.py --target render        # pushes env + deploys
+tg-bot webhook set                                   # re-register with the new secret
+```
+
+## Build fix — in place, waiting only on a token
+
+`deploy/Dockerfile.cloud` now authenticates its clone with a Render **secret file** named
+`gh_token`, bind-mounted for exactly one RUN (`--mount=type=bind`), so nothing lands in an
+image layer — a build ARG would persist in image metadata. `gh_token` is gitignored.
+
+Remaining step: a fine-grained, read-only (Contents:Read) token for `hnkovr/wordsman` in
+`WORDSMAN_REPO_READ_TOKEN`, then:
+
+```bash
+python3 scripts/render-env.py --target render --secret-file gh_token=WORDSMAN_REPO_READ_TOKEN
+python3 scripts/render-env.py --target render          # build + deploy
+# then the failover the owner asked for:
+python3 scripts/render-env.py --target render --token-var WORDSMAN_TG_BOT_TOKEN
+```
+
+Local builds of this Dockerfile need the file in the context: `printf '%s' "$TOKEN" > gh_token`.
+
 ## Do not repeat
 
 `hnkovr/wordsman` was public for ~6.5 min (22:13:50–22:20:30 UTC) to unblock that build,
