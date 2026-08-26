@@ -1,0 +1,56 @@
+# Handoff — RU search result buttons + the build blocker (2026-08-26)
+
+Tracker: hnkovr/wordsman [#46](https://github.com/hnkovr/wordsman/issues/46) (feature),
+[#49](https://github.com/hnkovr/wordsman/issues/49) (build blocker + publication incident).
+
+## Shipped and merged
+
+`/ru*` no longer answers with a wall of text. Every result is a button; tapping one
+**delivers the file** — a local hit from disk, an online candidate downloaded first
+(`srt-search fetch`, `SRT_SEARCH_LANGUAGE=ru`) and attached as `.srt`. `⬇️ Скачать все`
+sends every online subtitle. Audio tracks and torrent/manual sources stay link buttons:
+a track is a whole media file, far past Telegram's 50 MB ceiling.
+
+- `wordsman-tg-bot` main `41faef3` — `picks.py` (result cache), `rusearch.render_results`
+  + `collect_picks` + `download_online_sub`, `bot._send_picks`/`_deliver_pick`.
+  257 tests pass, coverage 93.5% (gate 85%).
+- `wordsman-srt-search` main `0205114` — new `fetch PROVIDER CANDIDATE_ID`; subtitlecat
+  now **verifies the language exists before listing a candidate** and parses real download
+  counts. Probed live: of four "Interstellar" entries only one had a RU track, and it was
+  not the top hit — without this, most buttons would have failed.
+- `wordsman` main `6a4d7e7` — submodule pins.
+
+Live: `@wordsman_render_bot` runs the new image (built during the brief public window).
+**Not yet confirmed end-to-end by a human** — the synthetic update targets the service
+topic, which staging's scope rules drop. A real `/ru_subs Interstellar` is the check.
+
+## Blocked: nothing can be rebuilt or failed over
+
+`deploy/Dockerfile.cloud` clones the **private** `hnkovr/wordsman`; the build has no
+credentials → `could not read Username`. Consequences:
+
+- new code cannot reach any host;
+- **failover is impossible too**: Render applies env only on a deploy — restart returns
+  200 with the old env, rollback returns 400. See `docs/deploy.md` § "Failover to Render
+  is gated on a working build".
+- `@wordsman_bot` (Fly) is down — trial ended, `flyctl` refuses even `status`; its webhook
+  is unset with ~6 updates queued. No host can serve it today.
+
+Fix options ranked in #49; the strongest is **build in GitHub Actions → push to GHCR →
+Render deploys the prebuilt image** (private repo is natively reachable inside Actions, so
+no token is created, stored or mounted anywhere). `scripts/render-env.py --token-var
+WORDSMAN_TG_BOT_TOKEN` is the failover one-liner once builds work.
+
+## Do not repeat
+
+`hnkovr/wordsman` was public for ~6.5 min (22:13:50–22:20:30 UTC) to unblock that build,
+then reverted. 0 forks, no referrers; **re-run the traffic check** — GitHub aggregates per
+day and lags ~24h:
+`just -f ~/.ai/skills/_scripts/git/github-cli/Justfile exposure-report hnkovr/wordsman`
+
+Publishing is never the unblock here: `data/` carries complete third-party subtitle
+scripts. Guardrails added and pushed (`~/.ai` `80b253f`): a content audit
+(`content-audit.sh`, classes in `_settings/git/publish_content_audit.yml`), an
+`exposure-report.sh`, both wired into `/github-repo-set-visibility`, and a PreToolUse hook
+`publish-guard.py` that denies a raw gh visibility flip. The hook registration lives in
+`~/.claude/settings.json`, which is **gitignored** — it must be re-added on another machine.
