@@ -24,7 +24,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 # A mount leaves nothing in the layer, and `$(cat …)` is not expanded in the build log.
 #
 # Building this image locally therefore needs that file present in the context:
-#     printf '%s' "$WORDSMAN_REPO_READ_TOKEN" > gh_token     # never commit it
+#     printf '%s' "$GH_HNKOVR_READ_TOKEN" > gh_token         # never commit it
 # Publishing the repo is NOT an alternative — see wordsman#49.
 ARG WORDSMAN_REPO=github.com/hnkovr/wordsman
 ARG WORDSMAN_REF=main

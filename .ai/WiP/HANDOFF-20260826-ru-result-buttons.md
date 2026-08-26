@@ -61,17 +61,22 @@ tg-bot webhook set                                   # re-register with the new 
 `gh_token`, bind-mounted for exactly one RUN (`--mount=type=bind`), so nothing lands in an
 image layer — a build ARG would persist in image metadata. `gh_token` is gitignored.
 
-Remaining step: a fine-grained, read-only (Contents:Read) token for `hnkovr/wordsman` in
-`WORDSMAN_REPO_READ_TOKEN`, then:
+Remaining step: a fine-grained, read-only (Contents:Read) GitHub token in
+`GH_HNKOVR_READ_TOKEN` — the ACCOUNT-WIDE default for cloning private hnkovr repos in
+builds, registered in `~/.ai/skills/_settings/secrets_catalog.yml`. Its scope must cover
+every repo that should be cloneable; a project needing something narrower shadows it with
+`<PROJECT>_REPO_READ_TOKEN`, which consumers try first. Then:
 
 ```bash
-python3 scripts/render-env.py --target render --secret-file gh_token=WORDSMAN_REPO_READ_TOKEN
+python3 scripts/render-env.py --target render \
+    --secret-file gh_token=WORDSMAN_REPO_READ_TOKEN,GH_HNKOVR_READ_TOKEN
 python3 scripts/render-env.py --target render          # build + deploy
 # then the failover the owner asked for:
 python3 scripts/render-env.py --target render --token-var WORDSMAN_TG_BOT_TOKEN
 ```
 
-Local builds of this Dockerfile need the file in the context: `printf '%s' "$TOKEN" > gh_token`.
+Local builds need the file in the context: `printf '%s' "$GH_HNKOVR_READ_TOKEN" > gh_token`.
+Do NOT use `GH_TOKEN` (the broad gh-CLI user token) for this — it can push and delete.
 
 ## Do not repeat
 

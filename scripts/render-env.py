@@ -41,6 +41,23 @@ def find_secret(var: str) -> str:
     return got.stdout.strip()
 
 
+def find_first_secret(names: str) -> tuple[str, str]:
+    """First of `VAR1,VAR2,…` that resolves — project override, then account default.
+
+    Lets one account-wide credential serve every project (GH_HNKOVR_READ_TOKEN) while a
+    project that needs a narrower scope can shadow it with its own var, without either
+    side knowing about the other.
+    """
+    wanted = [n.strip() for n in names.split(",") if n.strip()]
+    for var in wanted[:-1]:
+        if os.environ.get(var):
+            return var, os.environ[var]
+        got = subprocess.run([str(FIND_SECRET), var, "--quiet"], capture_output=True, text=True)
+        if got.returncode == 0 and got.stdout.strip():
+            return var, got.stdout.strip()
+    return wanted[-1], find_secret(wanted[-1])  # last one must exist — it fails loudly
+
+
 def load_target(name: str) -> dict[str, str]:
     text = TARGETS.read_text(encoding="utf-8")
     try:
@@ -102,9 +119,10 @@ def main() -> None:
     ap.add_argument(
         "--secret-file",
         default=None,
-        metavar="NAME=VAR",
+        metavar="NAME=VAR[,VAR2]",
         help=(
-            "upload a Render SECRET FILE named NAME holding the resolved secret VAR, then "
+            "upload a Render SECRET FILE named NAME holding the first VAR that resolves "
+            "(project override first, account default last), then "
             "exit. Render drops secret files into the build context, which is how the "
             "Docker build authenticates its clone of the private parent repo without the "
             "token ever entering an image layer (a build ARG would)."
@@ -142,9 +160,10 @@ def main() -> None:
         ]
         # PUT replaces the whole list, exactly like env-vars — merge, never overwrite.
         merged = [f for f in existing if f["name"] != name]
-        merged.append({"name": name, "content": find_secret(var)})
+        used, content = find_first_secret(var)
+        merged.append({"name": name, "content": content})
         api("PUT", f"/services/{service}/secret-files", merged)
-        print(f"{args.target}: secret-files =", sorted(f["name"] for f in merged), f"<- ${var}")
+        print(f"{args.target}: secret-files =", sorted(f["name"] for f in merged), f"<- ${used}")
         return
 
     # This host's own bot, its own public URL: one bot per host means no webhook contention.
